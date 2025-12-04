@@ -148,18 +148,30 @@ export async function discoverCalendars(
 
     const calendarsXml = await calendarsResponse.text();
     const calendars: ICloudCalendar[] = [];
+    
+    console.log(`Calendar discovery response received (${calendarsXml.length} chars)`);
 
     // Parse calendar list from XML response
     // Match calendar entries with display names
     const calendarMatches = calendarsXml.matchAll(
       /<d:response[^>]*>[\s\S]*?<d:href>([^<]+)<\/d:href>[\s\S]*?<d:displayname>([^<]+)<\/d:displayname>[\s\S]*?<\/d:response>/g
     );
+    
+    const allDiscoveredCalendars: Array<{name: string, url: string}> = [];
 
     for (const match of calendarMatches) {
       const url = match[1];
       const name = match[2];
+      allDiscoveredCalendars.push({ name, url });
+    }
+    
+    console.log(`Total calendars discovered: ${allDiscoveredCalendars.length}`);
+    console.log(`All discovered calendar names: ${allDiscoveredCalendars.map(c => `"${c.name}"`).join(", ")}`);
+    console.log(`Looking for calendars matching: ${targetCalendarNames.map(n => `"${n}"`).join(", ")}`);
 
-      console.log(`Discovered calendar: "${name}"`);
+    for (const calendar of allDiscoveredCalendars) {
+      const url = calendar.url;
+      const name = calendar.name;
 
       // Filter out excluded calendars
       const excludedNames = ["Holidays", "Birthdays", "Reminders"];
@@ -175,12 +187,14 @@ export async function discoverCalendars(
 
       // Only include calendars matching target names
       if (normalizedTargetNames.includes(normalizedName)) {
-        console.log(`Including calendar: "${name}" (matches target)`);
+        console.log(`✓ Including calendar: "${name}" (matches target)`);
         calendars.push({ name, url });
       } else {
-        console.log(`Skipping calendar: "${name}" (does not match target names: ${targetCalendarNames.join(", ")})`);
+        console.log(`✗ Skipping calendar: "${name}" (does not match target names)`);
       }
     }
+    
+    console.log(`Matched ${calendars.length} calendar(s) out of ${allDiscoveredCalendars.length} total`);
 
     return calendars;
   } catch (error) {
