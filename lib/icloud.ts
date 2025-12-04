@@ -159,15 +159,26 @@ export async function discoverCalendars(
       const url = match[1];
       const name = match[2];
 
+      console.log(`Discovered calendar: "${name}"`);
+
       // Filter out excluded calendars
       const excludedNames = ["Holidays", "Birthdays", "Reminders"];
       if (excludedNames.includes(name)) {
+        console.log(`Excluding calendar: "${name}" (in excluded list)`);
         continue;
       }
 
+      // Normalize names for comparison (trim and remove quotes)
+      const normalizeName = (n: string) => n.trim().replace(/^["']|["']$/g, '');
+      const normalizedTargetNames = targetCalendarNames.map(normalizeName);
+      const normalizedName = normalizeName(name);
+
       // Only include calendars matching target names
-      if (targetCalendarNames.includes(name)) {
+      if (normalizedTargetNames.includes(normalizedName)) {
+        console.log(`Including calendar: "${name}" (matches target)`);
         calendars.push({ name, url });
+      } else {
+        console.log(`Skipping calendar: "${name}" (does not match target names: ${targetCalendarNames.join(", ")})`);
       }
     }
 
@@ -320,6 +331,7 @@ export async function fetchAllEvents(
   start: Date,
   end: Date
 ): Promise<NormalizedEvent[]> {
+  console.log(`Discovering calendars matching: ${calendarNames.join(", ")}`);
   const calendars = await discoverCalendars(username, password, calendarNames);
 
   if (calendars.length === 0) {
@@ -329,10 +341,14 @@ export async function fetchAllEvents(
     return [];
   }
 
+  console.log(`Found ${calendars.length} matching calendar(s): ${calendars.map(c => c.name).join(", ")}`);
+  console.log(`Fetching events from ${start.toISOString()} to ${end.toISOString()}`);
+
   const allEvents: NormalizedEvent[] = [];
 
   for (const calendar of calendars) {
     try {
+      console.log(`Fetching events from calendar: ${calendar.name}`);
       const events = await fetchEvents(
         username,
         password,
@@ -341,6 +357,7 @@ export async function fetchAllEvents(
         start,
         end
       );
+      console.log(`Found ${events.length} event(s) in calendar: ${calendar.name}`);
       allEvents.push(...events);
     } catch (error) {
       console.error(
@@ -351,6 +368,7 @@ export async function fetchAllEvents(
     }
   }
 
+  console.log(`Total events fetched: ${allEvents.length}`);
   return allEvents;
 }
 
