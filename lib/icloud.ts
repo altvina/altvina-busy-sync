@@ -25,7 +25,7 @@ export async function discoverCalendars(
   targetCalendarNames: string[]
 ): Promise<ICloudCalendar[]> {
   try {
-    // First, discover the principal URL
+    // Step 1: Get current-user-principal
     const principalResponse = await fetch(`${ICLOUD_BASE_URL}/`, {
       method: "PROPFIND",
       headers: {
@@ -34,9 +34,10 @@ export async function discoverCalendars(
         "Content-Type": "application/xml",
       },
       body: `<?xml version="1.0" encoding="UTF-8"?>
-<d:propfind xmlns:d="DAV:" xmlns:cd="urn:ietf:params:xml:ns:caldav">
+<d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
   <d:prop>
-    <cd:calendar-home-set/>
+    <cs:getctag/>
+    <d:current-user-principal/>
   </d:prop>
 </d:propfind>`,
     });
@@ -49,55 +50,77 @@ export async function discoverCalendars(
 
     const principalXml = await principalResponse.text();
     
-    // Try multiple regex patterns to match different XML namespace formats
-    // iCloud may use different namespace prefixes or structures
-    let calendarHomeMatch = principalXml.match(
-      /<[^:]*:calendar-home-set[^>]*>\s*<[^:]*:href[^>]*>([^<]+)<\/[^:]*:href>\s*<\/[^:]*:calendar-home-set>/
+    // Extract current-user-principal href
+    let principalHrefMatch = principalXml.match(
+      /<d:current-user-principal[^>]*>\s*<d:href[^>]*>([^<]+)<\/d:href>\s*<\/d:current-user-principal>/
     );
     
-    // Also try with explicit namespace
-    if (!calendarHomeMatch) {
-      calendarHomeMatch = principalXml.match(
-        /<cd:calendar-home-set[^>]*>\s*<d:href[^>]*>([^<]+)<\/d:href>\s*<\/cd:calendar-home-set>/
+    if (!principalHrefMatch) {
+      principalHrefMatch = principalXml.match(
+        /<current-user-principal[^>]*>\s*<href[^>]*>([^<]+)<\/href>\s*<\/current-user-principal>/
       );
     }
+
+    if (!principalHrefMatch) {
+      const preview = principalXml.substring(0, 1000);
+      console.error("Principal response XML:", preview);
+      throw new Error(
+        `Could not find current-user-principal in response. Response preview: ${preview}`
+      );
+    }
+
+    const principalHref = principalHrefMatch[1];
+    const principalUrl = principalHref.startsWith('http') 
+      ? principalHref 
+      : `${ICLOUD_BASE_URL}${principalHref}`;
+
+    // Step 2: Query the principal for calendar-home-set
+    const calendarHomeResponse = await fetch(principalUrl, {
+      method: "PROPFIND",
+      headers: {
+        Authorization: getAuthHeader(username, password),
+        Depth: "0",
+        "Content-Type": "application/xml",
+      },
+      body: `<?xml version="1.0" encoding="UTF-8"?>
+<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <c:calendar-home-set/>
+  </d:prop>
+</d:propfind>`,
+    });
+
+    if (!calendarHomeResponse.ok) {
+      throw new Error(
+        `Failed to get calendar home set: ${calendarHomeResponse.status} ${calendarHomeResponse.statusText}`
+      );
+    }
+
+    const calendarHomeXml = await calendarHomeResponse.text();
     
-    // Try without namespace prefix
+    // Extract calendar-home-set href
+    let calendarHomeMatch = calendarHomeXml.match(
+      /<c:calendar-home-set[^>]*>\s*<d:href[^>]*>([^<]+)<\/d:href>\s*<\/c:calendar-home-set>/
+    );
+    
     if (!calendarHomeMatch) {
-      calendarHomeMatch = principalXml.match(
+      calendarHomeMatch = calendarHomeXml.match(
         /<calendar-home-set[^>]*>\s*<href[^>]*>([^<]+)<\/href>\s*<\/calendar-home-set>/
       );
     }
 
-    let calendarHomeUrl: string;
-    
     if (!calendarHomeMatch) {
-      // Log the response for debugging (first 1000 chars to avoid huge logs)
-      const preview = principalXml.substring(0, 1000);
-      console.error("Principal response XML preview:", preview);
-      
-      // Fallback: Try to use the standard iCloud CalDAV path
-      // iCloud typically uses: https://caldav.icloud.com/[user-id]/calendars/
-      // But we need the user-id which might be in the response
-      const userIdMatch = principalXml.match(/\/\d+\//);
-      if (userIdMatch) {
-        // Try constructing the path manually
-        const baseMatch = principalResponse.url.match(/^(https:\/\/[^\/]+)/);
-        if (baseMatch) {
-          calendarHomeUrl = `${baseMatch[1]}${userIdMatch[0]}calendars/`;
-          console.log(`Using fallback calendar home URL: ${calendarHomeUrl}`);
-        } else {
-          throw new Error(
-            `Could not find calendar home set in principal response. Response preview: ${preview}`
-          );
-        }
-      } else {
-        throw new Error(
-          `Could not find calendar home set in principal response. Response preview: ${preview}`
-        );
-      }
-    } else {
-      calendarHomeUrl = calendarHomeMatch[1];
+      const preview = calendarHomeXml.substring(0, 1000);
+      console.error("Calendar home response XML:", preview);
+      throw new Error(
+        `Could not find calendar home set. Response preview: ${preview}`
+      );
+    }
+
+    let calendarHomeUrl = calendarHomeMatch[1];
+    // Make sure it's a full URL
+    if (!calendarHomeUrl.startsWith('http')) {
+      calendarHomeUrl = `${ICLOUD_BASE_URL}${calendarHomeUrl}`;
     }
 
     // Now discover all calendars
