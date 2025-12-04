@@ -44,7 +44,19 @@ export async function getAccessToken(
       );
     }
 
-    const data = (await response.json()) as { access_token: string };
+    const data = (await response.json()) as { access_token: string; error?: any };
+    
+    if (data.error) {
+      console.error("Token request error:", data.error);
+      throw new Error(
+        `Failed to get access token: ${data.error.error_description || data.error.message || JSON.stringify(data.error)}`
+      );
+    }
+    
+    if (!data.access_token) {
+      throw new Error("Access token not found in response");
+    }
+    
     return data.access_token;
   } catch (error) {
     console.error("Error getting access token:", error);
@@ -72,6 +84,24 @@ export async function findTargetCalendar(
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`Graph API error details:`, {
+        status: response.status,
+        statusText: response.statusText,
+        url,
+        userId,
+        errorText,
+      });
+      
+      // Provide helpful error message for common issues
+      if (response.status === 403) {
+        throw new Error(
+          `Access denied to calendars for user ${userId}. ` +
+          `Please verify: 1) Calendars.ReadWrite is set as APPLICATION permission (not Delegated), ` +
+          `2) Admin consent has been granted, 3) The user ID is correct. ` +
+          `Error: ${errorText}`
+        );
+      }
+      
       throw new Error(
         `Failed to list calendars: ${response.status} ${response.statusText} - ${errorText}`
       );
