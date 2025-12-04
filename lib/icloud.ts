@@ -289,16 +289,52 @@ export async function fetchEvents(
     }
 
     // Extract calendar-data from XML response
-    const calendarDataMatches = reportXml.matchAll(
+    // iCloud uses default namespace, so try multiple patterns
+    let matchesArray: RegExpMatchArray[] = [];
+    
+    // Try pattern 1: with c: namespace prefix
+    let calendarDataMatches = reportXml.matchAll(
       /<c:calendar-data[^>]*>([\s\S]*?)<\/c:calendar-data>/g
     );
+    matchesArray = Array.from(calendarDataMatches);
     
-    const matchesArray = Array.from(calendarDataMatches);
+    // If no matches, try pattern 2: without namespace prefix (default namespace)
+    if (matchesArray.length === 0) {
+      console.log("Trying calendar-data pattern without namespace prefix...");
+      calendarDataMatches = reportXml.matchAll(
+        /<calendar-data[^>]*>([\s\S]*?)<\/calendar-data>/g
+      );
+      matchesArray = Array.from(calendarDataMatches);
+    }
+    
+    // Try pattern 3: with xmlns attribute (CDATA might be escaped)
+    if (matchesArray.length === 0) {
+      console.log("Trying calendar-data pattern with xmlns...");
+      calendarDataMatches = reportXml.matchAll(
+        /<calendar-data[^>]*xmlns[^>]*>([\s\S]*?)<\/calendar-data>/g
+      );
+      matchesArray = Array.from(calendarDataMatches);
+    }
+    
+    // Try pattern 4: flexible namespace with any prefix
+    if (matchesArray.length === 0) {
+      console.log("Trying calendar-data pattern with flexible namespace...");
+      calendarDataMatches = reportXml.matchAll(
+        /<[^:>]*:calendar-data[^>]*>([\s\S]*?)<\/[^:>]*:calendar-data>/g
+      );
+      matchesArray = Array.from(calendarDataMatches);
+    }
+    
     console.log(`Found ${matchesArray.length} calendar-data block(s) in report response`);
+    
+    // If still no matches, log a larger sample to see the actual structure
+    if (matchesArray.length === 0 && reportXml.length > 1000) {
+      console.log(`No calendar-data found. XML sample (chars 500-1500): ${reportXml.substring(500, 1500)}`);
+    }
 
     const events: NormalizedEvent[] = [];
 
-    for (const match of calendarDataMatches) {
+    for (const match of matchesArray) {
       const icalText = match[1]
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
