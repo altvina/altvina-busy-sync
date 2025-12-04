@@ -48,15 +48,57 @@ export async function discoverCalendars(
     }
 
     const principalXml = await principalResponse.text();
-    const calendarHomeMatch = principalXml.match(
-      /<cd:calendar-home-set[^>]*><d:href>([^<]+)<\/d:href><\/cd:calendar-home-set>/
+    
+    // Try multiple regex patterns to match different XML namespace formats
+    // iCloud may use different namespace prefixes or structures
+    let calendarHomeMatch = principalXml.match(
+      /<[^:]*:calendar-home-set[^>]*>\s*<[^:]*:href[^>]*>([^<]+)<\/[^:]*:href>\s*<\/[^:]*:calendar-home-set>/
     );
-
+    
+    // Also try with explicit namespace
     if (!calendarHomeMatch) {
-      throw new Error("Could not find calendar home set in principal response");
+      calendarHomeMatch = principalXml.match(
+        /<cd:calendar-home-set[^>]*>\s*<d:href[^>]*>([^<]+)<\/d:href>\s*<\/cd:calendar-home-set>/
+      );
+    }
+    
+    // Try without namespace prefix
+    if (!calendarHomeMatch) {
+      calendarHomeMatch = principalXml.match(
+        /<calendar-home-set[^>]*>\s*<href[^>]*>([^<]+)<\/href>\s*<\/calendar-home-set>/
+      );
     }
 
-    const calendarHomeUrl = calendarHomeMatch[1];
+    let calendarHomeUrl: string;
+    
+    if (!calendarHomeMatch) {
+      // Log the response for debugging (first 1000 chars to avoid huge logs)
+      const preview = principalXml.substring(0, 1000);
+      console.error("Principal response XML preview:", preview);
+      
+      // Fallback: Try to use the standard iCloud CalDAV path
+      // iCloud typically uses: https://caldav.icloud.com/[user-id]/calendars/
+      // But we need the user-id which might be in the response
+      const userIdMatch = principalXml.match(/\/\d+\//);
+      if (userIdMatch) {
+        // Try constructing the path manually
+        const baseMatch = principalResponse.url.match(/^(https:\/\/[^\/]+)/);
+        if (baseMatch) {
+          calendarHomeUrl = `${baseMatch[1]}${userIdMatch[0]}calendars/`;
+          console.log(`Using fallback calendar home URL: ${calendarHomeUrl}`);
+        } else {
+          throw new Error(
+            `Could not find calendar home set in principal response. Response preview: ${preview}`
+          );
+        }
+      } else {
+        throw new Error(
+          `Could not find calendar home set in principal response. Response preview: ${preview}`
+        );
+      }
+    } else {
+      calendarHomeUrl = calendarHomeMatch[1];
+    }
 
     // Now discover all calendars
     const calendarsResponse = await fetch(calendarHomeUrl, {
