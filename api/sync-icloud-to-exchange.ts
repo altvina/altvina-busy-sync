@@ -81,19 +81,24 @@ function validateEnvVars(): {
     );
   }
 
+  // Helper to trim quotes and whitespace from env vars
+  const trimEnvVar = (value: string): string => {
+    return value.trim().replace(/^["']|["']$/g, '');
+  };
+
   return {
-    icloudUsername: requiredVars.ICLOUD_USERNAME!,
-    icloudPassword: requiredVars.ICLOUD_APP_PASSWORD!,
-    icloudCal1: requiredVars.ICLOUD_CAL1!,
-    icloudCal2: requiredVars.ICLOUD_CAL2!,
-    msTenantId: requiredVars.MS_TENANT_ID!,
-    msClientId: requiredVars.MS_CLIENT_ID!,
-    msClientSecret: requiredVars.MS_CLIENT_SECRET!,
-    msUserId: requiredVars.MS_USER_ID!,
-    msTargetCalendarName: requiredVars.MS_TARGET_CALENDAR_NAME!,
+    icloudUsername: trimEnvVar(requiredVars.ICLOUD_USERNAME!),
+    icloudPassword: trimEnvVar(requiredVars.ICLOUD_APP_PASSWORD!),
+    icloudCal1: trimEnvVar(requiredVars.ICLOUD_CAL1!),
+    icloudCal2: trimEnvVar(requiredVars.ICLOUD_CAL2!),
+    msTenantId: trimEnvVar(requiredVars.MS_TENANT_ID!),
+    msClientId: trimEnvVar(requiredVars.MS_CLIENT_ID!),
+    msClientSecret: trimEnvVar(requiredVars.MS_CLIENT_SECRET!),
+    msUserId: trimEnvVar(requiredVars.MS_USER_ID!),
+    msTargetCalendarName: trimEnvVar(requiredVars.MS_TARGET_CALENDAR_NAME!),
     syncLookbackDays: lookbackDays,
     syncLookaheadDays: lookaheadDays,
-    timezone: requiredVars.TIMEZONE!,
+    timezone: trimEnvVar(requiredVars.TIMEZONE!),
   };
 }
 

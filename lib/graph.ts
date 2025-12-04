@@ -110,15 +110,27 @@ export async function findTargetCalendar(
     const data = (await response.json()) as { value: GraphCalendar[] };
     const calendars: GraphCalendar[] = data.value || [];
 
+    // Trim and normalize calendar names for comparison
+    const normalizeName = (name: string): string => {
+      return name.trim().replace(/^["']|["']$/g, '');
+    };
+
+    const normalizedTargetName = normalizeName(calendarName);
+    
+    console.log(`Looking for calendar: "${normalizedTargetName}"`);
+    console.log(`Available calendars: ${calendars.map((c) => `"${c.name}"`).join(", ")}`);
+
     const targetCalendar = calendars.find(
-      (cal) => cal.name === calendarName
+      (cal) => normalizeName(cal.name) === normalizedTargetName
     );
 
     if (!targetCalendar) {
       throw new Error(
-        `Calendar "${calendarName}" not found. Available calendars: ${calendars.map((c) => c.name).join(", ")}`
+        `Calendar "${normalizedTargetName}" not found. Available calendars: ${calendars.map((c) => c.name).join(", ")}`
       );
     }
+    
+    console.log(`Found target calendar: "${targetCalendar.name}" (ID: ${targetCalendar.id})`);
 
     return targetCalendar;
   } catch (error) {
