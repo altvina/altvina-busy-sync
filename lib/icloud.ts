@@ -361,6 +361,10 @@ export async function fetchEvents(
       console.log(`Parsing calendar-data block (${icalText.length} chars), sample: ${icalText.substring(0, 200)}`);
 
       try {
+        // Extract timezone info from raw iCalendar text before parsing
+        const tzidMatch = icalText.match(/DTSTART[^:]*TZID=([^:;]+):/i);
+        const eventTimezone = tzidMatch ? tzidMatch[1] : null;
+        
         const jcalData = ICAL.parse(icalText);
         const comp = new ICAL.Component(jcalData);
 
@@ -368,7 +372,7 @@ export async function fetchEvents(
         const vevents = comp.getAllSubcomponents("vevent");
 
         for (const vevent of vevents) {
-          const normalized = normalizeEvent(vevent, calendarName);
+          const normalized = normalizeEvent(vevent, calendarName, eventTimezone);
           if (normalized) {
             events.push(normalized);
           }
@@ -391,7 +395,8 @@ export async function fetchEvents(
  */
 function normalizeEvent(
   vevent: ICAL.Component,
-  calendarName: string
+  calendarName: string,
+  eventTimezone: string | null
 ): NormalizedEvent | null {
   try {
     const event = new ICAL.Event(vevent);
@@ -404,16 +409,46 @@ function normalizeEvent(
     const description = event.description || "";
     const location = event.location || undefined;
 
-    const startDate = event.startDate?.toJSDate();
-    const endDate = event.endDate?.toJSDate();
+    // Get the ICAL.Time objects
+    const startTime = event.startDate;
+    const endTime = event.endDate;
 
-    if (!startDate || !endDate) {
+    if (!startTime || !endTime) {
       console.warn("Event missing start or end date, skipping:", uid);
       return null;
     }
 
+    // Convert to JavaScript Date objects
+    let startDate = startTime.toJSDate();
+    let endDate = endTime.toJSDate();
+
+    // Fix timezone conversion issue with ical.js
+    // Problem: toJSDate() sometimes treats timezone-aware times as UTC
+    // Example: DTSTART;TZID=America/Los_Angeles:20251205T093000 (9:30 AM PT)
+    // Should become: 2025-12-05T17:30:00.000Z (17:30 UTC, since PT is UTC-8)
+    // But toJSDate() might return: 2025-12-05T09:30:00.000Z (treating 09:30 as UTC)
+    if (eventTimezone && eventTimezone !== 'UTC' && eventTimezone.includes('America/Los_Angeles')) {
+      // Check if the conversion looks wrong by comparing UTC hour to expected PT hour
+      // If UTC hour is 9 and it should be 9 AM PT, then UTC should be 17 (5 PM), not 9
+      const utcHour = startDate.getUTCHours();
+      const ptTime = startDate.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', hour12: false });
+      const [ptHourStr] = ptTime.split(':');
+      const ptHour = parseInt(ptHourStr);
+      
+      // If UTC hour equals PT hour (and both are reasonable morning/afternoon hours),
+      // then toJSDate() didn't apply the timezone offset
+      // We need to add 8 hours (PST offset) to convert PT to UTC
+      if (utcHour === ptHour && utcHour < 16) {
+        // toJSDate() didn't apply timezone - add PST offset (UTC-8 means add 8 hours)
+        const pstOffsetMs = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
+        startDate = new Date(startDate.getTime() + pstOffsetMs);
+        endDate = new Date(endDate.getTime() + pstOffsetMs);
+        console.log(`Fixed timezone conversion for "${summary}": added 8 hours PST offset`);
+      }
+    }
+
     // Log for debugging
-    console.log(`Event "${summary}": start UTC=${startDate.toISOString()}, PT=${startDate.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`);
+    console.log(`Event "${summary}": timezone=${eventTimezone || 'UTC'}, JSDate UTC=${startDate.toISOString()}, PT=${startDate.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`);
 
     return {
       uid,
