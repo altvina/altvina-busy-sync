@@ -245,6 +245,9 @@ export async function fetchEvents(
 
     const startStr = formatDate(start);
     const endStr = formatDate(end);
+    
+    console.log(`Querying events from ${calendarName} from ${startStr} to ${endStr} (UTC)`);
+    console.log(`Local time: ${start.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })} to ${end.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })} (PT)`);
 
     // CalDAV REPORT request for events in time range
     const reportResponse = await fetch(calendarUrl, {
