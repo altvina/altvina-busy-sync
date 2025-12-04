@@ -150,20 +150,39 @@ export async function discoverCalendars(
     const calendars: ICloudCalendar[] = [];
     
     console.log(`Calendar discovery response received (${calendarsXml.length} chars)`);
+    
+    // Log a sample of the XML to debug parsing issues
+    const xmlSample = calendarsXml.substring(0, 2000);
+    console.log(`XML response sample (first 2000 chars):\n${xmlSample}`);
 
     // Parse calendar list from XML response
-    // Match calendar entries with display names
-    const calendarMatches = calendarsXml.matchAll(
+    // Try multiple regex patterns to handle different XML structures
+    let allDiscoveredCalendars: Array<{name: string, url: string}> = [];
+    
+    // Try pattern 1: with d: namespace
+    let calendarMatches = calendarsXml.matchAll(
       /<d:response[^>]*>[\s\S]*?<d:href>([^<]+)<\/d:href>[\s\S]*?<d:displayname>([^<]+)<\/d:displayname>[\s\S]*?<\/d:response>/g
     );
+    allDiscoveredCalendars = Array.from(calendarMatches).map(m => ({ url: m[1], name: m[2] }));
     
-    const allDiscoveredCalendars: Array<{name: string, url: string}> = [];
-
-    for (const match of calendarMatches) {
-      const url = match[1];
-      const name = match[2];
-      allDiscoveredCalendars.push({ name, url });
+    // If no matches, try pattern 2: without namespace
+    if (allDiscoveredCalendars.length === 0) {
+      console.log("Trying alternative regex pattern (without namespace)...");
+      calendarMatches = calendarsXml.matchAll(
+        /<response[^>]*>[\s\S]*?<href>([^<]+)<\/href>[\s\S]*?<displayname>([^<]+)<\/displayname>[\s\S]*?<\/response>/g
+      );
+      allDiscoveredCalendars = Array.from(calendarMatches).map(m => ({ url: m[1], name: m[2] }));
     }
+    
+    // Try pattern 3: flexible namespace
+    if (allDiscoveredCalendars.length === 0) {
+      console.log("Trying alternative regex pattern (flexible namespace)...");
+      calendarMatches = calendarsXml.matchAll(
+        /<[^:]*:response[^>]*>[\s\S]*?<[^:]*:href[^>]*>([^<]+)<\/[^:]*:href>[\s\S]*?<[^:]*:displayname[^>]*>([^<]+)<\/[^:]*:displayname>[\s\S]*?<\/[^:]*:response>/g
+      );
+      allDiscoveredCalendars = Array.from(calendarMatches).map(m => ({ url: m[1], name: m[2] }));
+    }
+
     
     console.log(`Total calendars discovered: ${allDiscoveredCalendars.length}`);
     console.log(`All discovered calendar names: ${allDiscoveredCalendars.map(c => `"${c.name}"`).join(", ")}`);
