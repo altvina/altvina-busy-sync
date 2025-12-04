@@ -167,12 +167,19 @@ export async function discoverCalendars(
     );
     
     for (const match of calendarMatches) {
-      const url = match[1];
+      let url = match[1];
       const name = match[2];
       
-      // Skip the principal/root calendar entry (usually has href ending in /calendars/)
-      // We only want actual calendar entries (they have UUIDs in the path)
-      if (url.endsWith('/calendars/') || !url.match(/\/[0-9A-F-]{36}\//i)) {
+      // Convert relative URL to absolute URL if needed
+      if (!url.startsWith('http')) {
+        url = `${ICLOUD_BASE_URL}${url}`;
+      }
+      
+      // Skip only the true principal entry (ends with exactly /calendars/ with nothing after)
+      // Keep sub-paths like /calendars/home/ or /calendars/UUID/ as they are actual calendars
+      // The principal entry is typically /272291719/calendars/ (user's calendar home)
+      const isPrincipal = url.endsWith('/calendars/') && !url.match(/\/calendars\/[^\/]+\/$/);
+      if (isPrincipal) {
         console.log(`Skipping principal/root entry: "${name}" (${url})`);
         continue;
       }
