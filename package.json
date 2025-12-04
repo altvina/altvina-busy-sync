@@ -1,0 +1,29 @@
+{
+  "name": "altvina-busy-sync",
+  "version": "1.0.0",
+  "description": "Sync iCloud calendars to Exchange calendar via Vercel serverless function",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "vercel dev",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "calendar",
+    "sync",
+    "icloud",
+    "exchange",
+    "vercel"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ical.js": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@vercel/node": "^3.0.0",
+    "typescript": "^5.3.0"
+  }
+}
+

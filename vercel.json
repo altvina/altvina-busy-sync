@@ -1,0 +1,9 @@
+{
+  "crons": [
+    {
+      "path": "/api/sync-icloud-to-exchange",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}
+
