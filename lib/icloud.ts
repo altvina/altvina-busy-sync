@@ -156,31 +156,28 @@ export async function discoverCalendars(
     console.log(`XML response sample (first 2000 chars):\n${xmlSample}`);
 
     // Parse calendar list from XML response
-    // Try multiple regex patterns to handle different XML structures
+    // iCloud uses default namespace (xmlns="DAV:") so elements don't have prefixes
+    // Structure: <response><href>...</href><propstat><prop><displayname>...</displayname></prop></propstat></response>
     let allDiscoveredCalendars: Array<{name: string, url: string}> = [];
     
-    // Try pattern 1: with d: namespace
-    let calendarMatches = calendarsXml.matchAll(
-      /<d:response[^>]*>[\s\S]*?<d:href>([^<]+)<\/d:href>[\s\S]*?<d:displayname>([^<]+)<\/d:displayname>[\s\S]*?<\/d:response>/g
+    // Pattern for default namespace (xmlns="DAV:") - this is what iCloud uses
+    // Match: <response>...<href>URL</href>...<displayname>NAME</displayname>...</response>
+    const calendarMatches = calendarsXml.matchAll(
+      /<response[^>]*>[\s\S]*?<href[^>]*>([^<]+)<\/href>[\s\S]*?<displayname[^>]*>([^<]+)<\/displayname>[\s\S]*?<\/response>/g
     );
-    allDiscoveredCalendars = Array.from(calendarMatches).map(m => ({ url: m[1], name: m[2] }));
     
-    // If no matches, try pattern 2: without namespace
-    if (allDiscoveredCalendars.length === 0) {
-      console.log("Trying alternative regex pattern (without namespace)...");
-      calendarMatches = calendarsXml.matchAll(
-        /<response[^>]*>[\s\S]*?<href>([^<]+)<\/href>[\s\S]*?<displayname>([^<]+)<\/displayname>[\s\S]*?<\/response>/g
-      );
-      allDiscoveredCalendars = Array.from(calendarMatches).map(m => ({ url: m[1], name: m[2] }));
-    }
-    
-    // Try pattern 3: flexible namespace
-    if (allDiscoveredCalendars.length === 0) {
-      console.log("Trying alternative regex pattern (flexible namespace)...");
-      calendarMatches = calendarsXml.matchAll(
-        /<[^:]*:response[^>]*>[\s\S]*?<[^:]*:href[^>]*>([^<]+)<\/[^:]*:href>[\s\S]*?<[^:]*:displayname[^>]*>([^<]+)<\/[^:]*:displayname>[\s\S]*?<\/[^:]*:response>/g
-      );
-      allDiscoveredCalendars = Array.from(calendarMatches).map(m => ({ url: m[1], name: m[2] }));
+    for (const match of calendarMatches) {
+      const url = match[1];
+      const name = match[2];
+      
+      // Skip the principal/root calendar entry (usually has href ending in /calendars/)
+      // We only want actual calendar entries (they have UUIDs in the path)
+      if (url.endsWith('/calendars/') || !url.match(/\/[0-9A-F-]{36}\//i)) {
+        console.log(`Skipping principal/root entry: "${name}" (${url})`);
+        continue;
+      }
+      
+      allDiscoveredCalendars.push({ url, name });
     }
 
     
