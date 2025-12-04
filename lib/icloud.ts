@@ -277,11 +277,21 @@ export async function fetchEvents(
     }
 
     const reportXml = await reportResponse.text();
+    
+    console.log(`CalDAV REPORT response for ${calendarName} (${reportXml.length} chars)`);
+    if (reportXml.length < 500) {
+      console.log(`Report XML: ${reportXml}`);
+    } else {
+      console.log(`Report XML sample (first 500 chars): ${reportXml.substring(0, 500)}`);
+    }
 
     // Extract calendar-data from XML response
     const calendarDataMatches = reportXml.matchAll(
       /<c:calendar-data[^>]*>([\s\S]*?)<\/c:calendar-data>/g
     );
+    
+    const matchesArray = Array.from(calendarDataMatches);
+    console.log(`Found ${matchesArray.length} calendar-data block(s) in report response`);
 
     const events: NormalizedEvent[] = [];
 
