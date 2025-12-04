@@ -4,7 +4,7 @@
   "description": "Sync iCloud calendars to Exchange calendar via Vercel serverless function",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --noEmit",
     "dev": "vercel dev",
     "type-check": "tsc --noEmit"
   },
