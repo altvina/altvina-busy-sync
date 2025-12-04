@@ -361,9 +361,15 @@ export async function fetchEvents(
       console.log(`Parsing calendar-data block (${icalText.length} chars), sample: ${icalText.substring(0, 200)}`);
 
       try {
-        // Extract timezone info from raw iCalendar text before parsing
-        const tzidMatch = icalText.match(/DTSTART[^:]*TZID=([^:;]+):/i);
-        const eventTimezone = tzidMatch ? tzidMatch[1] : null;
+        // Extract timezone and time info from raw iCalendar text
+        // Look for DTSTART with timezone: DTSTART;TZID=America/Los_Angeles:20251205T093000
+        const dtstartMatch = icalText.match(/DTSTART(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
+        const eventTimezone = dtstartMatch ? (dtstartMatch[1] || null) : null;
+        const dtstartValue = dtstartMatch ? dtstartMatch[2] : null; // Format: 20251205T093000
+        
+        // Also extract DTEND for end time
+        const dtendMatch = icalText.match(/DTEND(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
+        const dtendValue = dtendMatch ? dtendMatch[2] : null;
         
         const jcalData = ICAL.parse(icalText);
         const comp = new ICAL.Component(jcalData);
@@ -372,7 +378,7 @@ export async function fetchEvents(
         const vevents = comp.getAllSubcomponents("vevent");
 
         for (const vevent of vevents) {
-          const normalized = normalizeEvent(vevent, calendarName, eventTimezone);
+          const normalized = normalizeEvent(vevent, calendarName, eventTimezone, dtstartValue, dtendValue);
           if (normalized) {
             events.push(normalized);
           }
@@ -396,7 +402,9 @@ export async function fetchEvents(
 function normalizeEvent(
   vevent: ICAL.Component,
   calendarName: string,
-  eventTimezone: string | null
+  eventTimezone: string | null,
+  dtstartValue: string | null,
+  dtendValue: string | null
 ): NormalizedEvent | null {
   try {
     const event = new ICAL.Event(vevent);
@@ -427,23 +435,39 @@ function normalizeEvent(
     // Example: DTSTART;TZID=America/Los_Angeles:20251205T093000 (9:30 AM PT)
     // Should become: 2025-12-05T17:30:00.000Z (17:30 UTC, since PT is UTC-8)
     // But toJSDate() might return: 2025-12-05T09:30:00.000Z (treating 09:30 as UTC)
-    if (eventTimezone && eventTimezone !== 'UTC' && eventTimezone.includes('America/Los_Angeles')) {
-      // Check if the conversion looks wrong by comparing UTC hour to expected PT hour
-      // If UTC hour is 9 and it should be 9 AM PT, then UTC should be 17 (5 PM), not 9
-      const utcHour = startDate.getUTCHours();
-      const ptTime = startDate.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', hour12: false });
-      const [ptHourStr] = ptTime.split(':');
-      const ptHour = parseInt(ptHourStr);
+    if (eventTimezone && eventTimezone !== 'UTC' && eventTimezone.includes('America/Los_Angeles') && dtstartValue) {
+      // Parse the raw iCalendar time value: 20251205T093000
+      // Extract hour to see what the original time was
+      const timePart = dtstartValue.split('T')[1]; // "093000"
+      const originalHour = parseInt(timePart.substring(0, 2)); // 9
+      const originalMinute = parseInt(timePart.substring(2, 4)); // 30
       
-      // If UTC hour equals PT hour (and both are reasonable morning/afternoon hours),
-      // then toJSDate() didn't apply the timezone offset
-      // We need to add 8 hours (PST offset) to convert PT to UTC
-      if (utcHour === ptHour && utcHour < 16) {
+      // Get what UTC hour we got from toJSDate()
+      const utcHour = startDate.getUTCHours();
+      const utcMinute = startDate.getUTCMinutes();
+      
+      // If UTC hour matches original hour, toJSDate() didn't apply timezone
+      // Original: 9:30 AM PT should become 17:30 UTC, not 09:30 UTC
+      if (utcHour === originalHour && utcMinute === originalMinute) {
         // toJSDate() didn't apply timezone - add PST offset (UTC-8 means add 8 hours)
         const pstOffsetMs = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
         startDate = new Date(startDate.getTime() + pstOffsetMs);
-        endDate = new Date(endDate.getTime() + pstOffsetMs);
-        console.log(`Fixed timezone conversion for "${summary}": added 8 hours PST offset`);
+        console.log(`Fixed start timezone conversion for "${summary}": ${originalHour}:${String(originalMinute).padStart(2, '0')} PT -> added 8 hours PST offset`);
+      }
+      
+      // Fix end time if we have the raw value
+      if (dtendValue) {
+        const endTimePart = dtendValue.split('T')[1];
+        const originalEndHour = parseInt(endTimePart.substring(0, 2));
+        const originalEndMinute = parseInt(endTimePart.substring(2, 4));
+        const utcEndHour = endDate.getUTCHours();
+        const utcEndMinute = endDate.getUTCMinutes();
+        
+        if (utcEndHour === originalEndHour && utcEndMinute === originalEndMinute) {
+          const pstOffsetMs = 8 * 60 * 60 * 1000;
+          endDate = new Date(endDate.getTime() + pstOffsetMs);
+          console.log(`Fixed end timezone conversion for "${summary}": ${originalEndHour}:${String(originalEndMinute).padStart(2, '0')} PT -> added 8 hours PST offset`);
+        }
       }
     }
 
