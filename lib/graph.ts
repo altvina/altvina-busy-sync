@@ -44,7 +44,7 @@ export async function getAccessToken(
       );
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { access_token: string };
     return data.access_token;
   } catch (error) {
     console.error("Error getting access token:", error);
@@ -77,7 +77,7 @@ export async function findTargetCalendar(
       );
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { value: GraphCalendar[] };
     const calendars: GraphCalendar[] = data.value || [];
 
     const targetCalendar = calendars.find(
@@ -134,7 +134,7 @@ export async function deleteEventsInWindow(
       );
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { value: GraphEventResponse[] };
     const events: GraphEventResponse[] = data.value || [];
 
     // Delete each event

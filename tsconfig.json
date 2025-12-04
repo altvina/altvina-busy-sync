@@ -16,7 +16,7 @@
     "sourceMap": true,
     "types": ["node", "@vercel/node"]
   },
-  "include": ["**/*.ts"],
+  "include": ["**/*.ts", "types/**/*.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
 
