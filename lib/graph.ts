@@ -7,7 +7,7 @@ import type {
   GraphCalendar,
   GraphEventResponse,
   NormalizedEvent,
-} from "./types";
+} from "./types.js";
 
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 

@@ -4,14 +4,14 @@
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { fetchAllEvents } from "../lib/icloud";
+import { fetchAllEvents } from "../lib/icloud.js";
 import {
   getAccessToken,
   findTargetCalendar,
   deleteEventsInWindow,
   createEvents,
-} from "../lib/graph";
-import type { SyncWindow } from "../lib/types";
+} from "../lib/graph.js";
+import type { SyncWindow } from "../lib/types.js";
 
 /**
  * Calculate sync window based on lookback and lookahead days

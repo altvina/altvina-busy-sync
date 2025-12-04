@@ -3,7 +3,7 @@
  */
 
 import ICAL from "ical.js";
-import type { NormalizedEvent, ICloudCalendar } from "./types";
+import type { NormalizedEvent, ICloudCalendar } from "./types.js";
 
 const ICLOUD_BASE_URL = "https://caldav.icloud.com";
 
