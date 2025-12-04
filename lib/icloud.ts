@@ -335,10 +335,30 @@ export async function fetchEvents(
     const events: NormalizedEvent[] = [];
 
     for (const match of matchesArray) {
-      const icalText = match[1]
+      let icalText = match[1];
+      
+      // Decode XML entities
+      icalText = icalText
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
-        .replace(/&amp;/g, "&");
+        .replace(/&amp;/g, "&")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'");
+      
+      // Remove CDATA markers if present
+      icalText = icalText.replace(/<!\[CDATA\[/g, '').replace(/\]\]>/g, '');
+      
+      // Trim whitespace
+      icalText = icalText.trim();
+      
+      // Skip empty blocks
+      if (!icalText || icalText.length === 0) {
+        console.log("Skipping empty calendar-data block");
+        continue;
+      }
+      
+      // Log first 200 chars for debugging
+      console.log(`Parsing calendar-data block (${icalText.length} chars), sample: ${icalText.substring(0, 200)}`);
 
       try {
         const jcalData = ICAL.parse(icalText);
