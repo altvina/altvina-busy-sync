@@ -412,6 +412,9 @@ function normalizeEvent(
       return null;
     }
 
+    // Log for debugging
+    console.log(`Event "${summary}": start UTC=${startDate.toISOString()}, PT=${startDate.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`);
+
     return {
       uid,
       title: summary,

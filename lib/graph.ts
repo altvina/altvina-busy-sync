@@ -222,11 +222,10 @@ export async function createEvent(
 ): Promise<void> {
   try {
     // Format date for Graph API in the specified timezone
-    // Graph API expects dateTime to be in local time of the timezone, not UTC
+    // Microsoft Graph expects dateTime in ISO 8601 format representing local time in the timezone
     const formatDateTime = (date: Date, tz: string): string => {
-      // Convert to the target timezone and format as ISO 8601 without timezone indicator
-      // Format: YYYY-MM-DDTHH:mm:ss
-      const formatter = new Intl.DateTimeFormat('en-US', {
+      // Create a formatter for the target timezone
+      const formatter = new Intl.DateTimeFormat('en-CA', {
         timeZone: tz,
         year: 'numeric',
         month: '2-digit',
@@ -237,6 +236,7 @@ export async function createEvent(
         hour12: false,
       });
       
+      // Format the date - en-CA gives us YYYY-MM-DD format
       const parts = formatter.formatToParts(date);
       const year = parts.find(p => p.type === 'year')!.value;
       const month = parts.find(p => p.type === 'month')!.value;
@@ -247,6 +247,11 @@ export async function createEvent(
       
       return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
     };
+    
+    // Log the conversion for debugging
+    const startFormatted = formatDateTime(event.start, timezone);
+    const endFormatted = formatDateTime(event.end, timezone);
+    console.log(`Creating event "${event.title}": start UTC=${event.start.toISOString()} -> ${startFormatted} (${timezone})`);
 
     const graphEvent: GraphEvent = {
       subject: event.title,
