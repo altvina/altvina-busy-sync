@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iCloud to Exchange Calendar Sync</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .endpoint {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            font-family: monospace;
+            word-break: break-all;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        .status.active {
+            background: #4CAF50;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>iCloud to Exchange Calendar Sync</h1>
+    <p>This is a serverless function that syncs iCloud calendars to Exchange.</p>
+    
+    <h2>API Endpoint</h2>
+    <div class="endpoint">
+        <strong>GET/POST:</strong> <a href="/api/sync-icloud-to-exchange">/api/sync-icloud-to-exchange</a>
+    </div>
+    
+    <h2>Status</h2>
+    <p>
+        <span class="status active">● Active</span>
+        The sync runs automatically every 15 minutes via Vercel Cron Job.
+    </p>
+    
+    <h2>Manual Trigger</h2>
+    <p>You can manually trigger the sync by visiting:</p>
+    <div class="endpoint">
+        <a href="/api/sync-icloud-to-exchange" target="_blank">/api/sync-icloud-to-exchange</a>
+    </div>
+    
+    <h2>Response Format</h2>
+    <pre style="background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto;">
+{
+  "success": true,
+  "stats": {
+    "fetched": 10,
+    "deleted": 5,
+    "created": 10,
+    "durationMs": 1234
+  },
+  "window": {
+    "start": "2025-12-03T00:00:00.000Z",
+    "end": "2025-03-04T23:59:59.999Z"
+  }
+}
+    </pre>
+</body>
+</html>
