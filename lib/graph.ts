@@ -221,9 +221,31 @@ export async function createEvent(
   timezone: string
 ): Promise<void> {
   try {
-    // Format date for Graph API (ISO string with timezone)
-    const formatDateTime = (date: Date): string => {
-      return date.toISOString();
+    // Format date for Graph API in the specified timezone
+    // Graph API expects dateTime to be in local time of the timezone, not UTC
+    const formatDateTime = (date: Date, tz: string): string => {
+      // Convert to the target timezone and format as ISO 8601 without timezone indicator
+      // Format: YYYY-MM-DDTHH:mm:ss
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      });
+      
+      const parts = formatter.formatToParts(date);
+      const year = parts.find(p => p.type === 'year')!.value;
+      const month = parts.find(p => p.type === 'month')!.value;
+      const day = parts.find(p => p.type === 'day')!.value;
+      const hour = parts.find(p => p.type === 'hour')!.value;
+      const minute = parts.find(p => p.type === 'minute')!.value;
+      const second = parts.find(p => p.type === 'second')!.value;
+      
+      return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
     };
 
     const graphEvent: GraphEvent = {
@@ -233,11 +255,11 @@ export async function createEvent(
         content: `${event.description}\n\nSynced UID: ${event.uid}`,
       },
       start: {
-        dateTime: formatDateTime(event.start),
+        dateTime: formatDateTime(event.start, timezone),
         timeZone: timezone,
       },
       end: {
-        dateTime: formatDateTime(event.end),
+        dateTime: formatDateTime(event.end, timezone),
         timeZone: timezone,
       },
       showAs: "busy",
