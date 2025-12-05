@@ -163,7 +163,8 @@ async function listEventsInWindow(
     if (nextLink) {
       url = nextLink;
     } else {
-      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100`;
+      // Request iCalUId field explicitly to match events by UID
+      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100&$select=id,subject,iCalUId,start,end`;
     }
 
     const response = await fetch(url, {
