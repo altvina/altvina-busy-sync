@@ -175,9 +175,9 @@ export default async function handler(
     console.log(`Sync complete: ${syncResult.created} created, ${syncResult.updated} updated, ${syncResult.skipped} skipped`);
 
     // Step 5: Delete orphaned events (exist in Exchange but not in iCloud)
-    // Get all existing events and find ones that don't match any iCloud event
-    console.log("Checking for orphaned events to delete...");
-    const existingEvents = await listEventsInWindow(
+    // Only delete orphaned events within the sync window (not old events outside window)
+    console.log("Checking for orphaned events to delete (within sync window only)...");
+    const existingEventsInWindow = await listEventsInWindow(
       accessToken,
       env.msUserId,
       targetCalendar.id,
@@ -186,7 +186,7 @@ export default async function handler(
     );
     
     const iCloudUids = new Set(iCloudEvents.map(e => e.uid));
-    const orphanedEvents = existingEvents.filter(e => 
+    const orphanedEvents = existingEventsInWindow.filter(e => 
       e.iCalUId && !iCloudUids.has(e.iCalUId)
     );
     

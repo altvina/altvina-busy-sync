@@ -492,14 +492,45 @@ export async function syncEvents(
   let skippedCount = 0;
   const processedUids = new Set<string>(); // Track UIDs in the batch
 
-  // Get all existing events in the calendar to check for manual status changes
-  const existingEvents = await listEventsInWindow(accessToken, userId, calendarId, window.start, window.end);
+  // Calculate extended window based on actual event dates
+  // This ensures we find existing events even if they're outside the sync window
+  let extendedStart = window.start;
+  let extendedEnd = window.end;
+  
+  if (events.length > 0) {
+    const eventStarts = events.map(e => e.start.getTime());
+    const eventEnds = events.map(e => e.end.getTime());
+    const minEventTime = Math.min(...eventStarts);
+    const maxEventTime = Math.max(...eventEnds);
+    
+    // Extend window to include all events, with some padding
+    extendedStart = new Date(Math.min(window.start.getTime(), minEventTime - 24 * 60 * 60 * 1000)); // 1 day before earliest
+    extendedEnd = new Date(Math.max(window.end.getTime(), maxEventTime + 24 * 60 * 60 * 1000)); // 1 day after latest
+    
+    // Cap at reasonable limits (10 years back, 2 years forward)
+    const now = Date.now();
+    const tenYearsAgo = now - (10 * 365 * 24 * 60 * 60 * 1000);
+    const twoYearsAhead = now + (2 * 365 * 24 * 60 * 60 * 1000);
+    
+    extendedStart = new Date(Math.max(extendedStart.getTime(), tenYearsAgo));
+    extendedEnd = new Date(Math.min(extendedEnd.getTime(), twoYearsAhead));
+    
+    extendedStart.setHours(0, 0, 0, 0);
+    extendedEnd.setHours(23, 59, 59, 999);
+  }
+
+  console.log(`Checking for existing events in extended window: ${extendedStart.toISOString()} to ${extendedEnd.toISOString()}`);
+  
+  // Get all existing events in the extended window to check for manual status changes
+  const existingEvents = await listEventsInWindow(accessToken, userId, calendarId, extendedStart, extendedEnd);
   const existingEventsByUid = new Map<string, GraphEventResponse>();
   existingEvents.forEach(e => {
     if (e.iCalUId) {
       existingEventsByUid.set(e.iCalUId, e);
     }
   });
+  
+  console.log(`Found ${existingEvents.length} existing event(s) in calendar (${existingEventsByUid.size} with UIDs)`);
 
   for (const event of events) {
     // Check for duplicate UIDs in the batch
