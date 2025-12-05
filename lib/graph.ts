@@ -493,48 +493,28 @@ export async function syncEvents(
   let skippedCount = 0;
   const processedUids = new Set<string>(); // Track UIDs in the batch
 
-  // Calculate extended window based on actual event dates
-  // This ensures we find existing events even if they're outside the sync window
-  // Microsoft Graph API limits calendarView to 1825 days (5 years), so we must respect that
-  let extendedStart = window.start;
-  let extendedEnd = window.end;
+  // Filter events to only include those within the sync window
+  // iCloud may return old events that overlap the query range, but we only want events in the sync window
+  const windowStartTime = window.start.getTime();
+  const windowEndTime = window.end.getTime();
   
-  if (events.length > 0) {
-    const eventStarts = events.map(e => e.start.getTime());
-    const eventEnds = events.map(e => e.end.getTime());
-    const minEventTime = Math.min(...eventStarts);
-    const maxEventTime = Math.max(...eventEnds);
-    
-    // Extend window to include all events, with some padding
-    extendedStart = new Date(Math.min(window.start.getTime(), minEventTime - 24 * 60 * 60 * 1000)); // 1 day before earliest
-    extendedEnd = new Date(Math.max(window.end.getTime(), maxEventTime + 24 * 60 * 60 * 1000)); // 1 day after latest
-    
-    // Microsoft Graph API maximum range is 1825 days (5 years)
-    // Cap the extended window to ensure we don't exceed this limit
-    const maxDays = 1825;
-    const maxRangeMs = maxDays * 24 * 60 * 60 * 1000;
-    
-    // If the range is too large, prioritize the sync window and extend only within limits
-    const rangeMs = extendedEnd.getTime() - extendedStart.getTime();
-    if (rangeMs > maxRangeMs) {
-      // Range is too large - use sync window as base and extend only within 5 year limit
-      // Prioritize recent events (extend backward from sync window end)
-      const syncWindowEnd = window.end.getTime();
-      extendedEnd = new Date(syncWindowEnd);
-      extendedStart = new Date(syncWindowEnd - maxRangeMs);
-      
-      console.log(`Extended window exceeds ${maxDays} days limit. Capping to: ${extendedStart.toISOString()} to ${extendedEnd.toISOString()}`);
-      console.log(`Note: Very old events (before ${extendedStart.toISOString()}) will be treated as new and may be recreated`);
-    }
-    
-    extendedStart.setHours(0, 0, 0, 0);
-    extendedEnd.setHours(23, 59, 59, 999);
+  const eventsInWindow = events.filter(event => {
+    const eventStartTime = event.start.getTime();
+    const eventEndTime = event.end.getTime();
+    // Event is in window if it starts or ends within the window, or spans the entire window
+    return (eventStartTime >= windowStartTime && eventStartTime <= windowEndTime) ||
+           (eventEndTime >= windowStartTime && eventEndTime <= windowEndTime) ||
+           (eventStartTime < windowStartTime && eventEndTime > windowEndTime);
+  });
+  
+  if (eventsInWindow.length < events.length) {
+    console.log(`Filtered ${events.length - eventsInWindow.length} event(s) outside sync window (keeping only events within ${window.start.toISOString()} to ${window.end.toISOString()})`);
   }
 
-  console.log(`Checking for existing events in extended window: ${extendedStart.toISOString()} to ${extendedEnd.toISOString()}`);
+  console.log(`Checking for existing events in sync window: ${window.start.toISOString()} to ${window.end.toISOString()}`);
   
-  // Get all existing events in the extended window to check for manual status changes
-  const existingEvents = await listEventsInWindow(accessToken, userId, calendarId, extendedStart, extendedEnd);
+  // Get all existing events in the sync window to check for manual status changes
+  const existingEvents = await listEventsInWindow(accessToken, userId, calendarId, window.start, window.end);
   const existingEventsByUid = new Map<string, GraphEventResponse>();
   existingEvents.forEach(e => {
     if (e.iCalUId) {
@@ -550,7 +530,8 @@ export async function syncEvents(
     console.log(`Sample existing UIDs: ${sampleUids.join(", ")}`);
   }
 
-  for (const event of events) {
+  // Only sync events within the sync window
+  for (const event of eventsInWindow) {
     // Check for duplicate UIDs in the batch
     if (processedUids.has(event.uid)) {
       console.warn(`Skipping duplicate UID in batch: "${event.title}" (${event.uid})`);
