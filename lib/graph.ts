@@ -333,6 +333,7 @@ export async function createEvent(
       },
       showAs: "busy",
       sensitivity: "private",
+      iCalUId: event.uid, // Set iCalUId explicitly to match events by UID
     };
 
     if (event.location) {
@@ -531,6 +532,12 @@ export async function syncEvents(
   });
   
   console.log(`Found ${existingEvents.length} existing event(s) in calendar (${existingEventsByUid.size} with UIDs)`);
+  
+  // Log sample of existing UIDs for debugging
+  if (existingEventsByUid.size > 0) {
+    const sampleUids = Array.from(existingEventsByUid.keys()).slice(0, 5);
+    console.log(`Sample existing UIDs: ${sampleUids.join(", ")}`);
+  }
 
   for (const event of events) {
     // Check for duplicate UIDs in the batch
@@ -548,6 +555,7 @@ export async function syncEvents(
       // Event exists - update it, preserving showAs if it's "free"
       try {
         const preserveShowAs = existingEvent.showAs === "free" ? "free" : undefined;
+        console.log(`Updating existing event: "${event.title}" (UID: ${event.uid}, existing iCalUId: ${existingEvent.iCalUId})`);
         await updateEvent(
           accessToken,
           userId,
@@ -568,6 +576,7 @@ export async function syncEvents(
     } else {
       // Event doesn't exist - create it
       try {
+        console.log(`Creating new event: "${event.title}" (UID: ${event.uid})`);
         await createEvent(accessToken, userId, calendarId, event, timezone);
         createdCount++;
       } catch (error) {

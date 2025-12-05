@@ -38,6 +38,7 @@ export interface GraphEvent {
   };
   showAs: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown";
   sensitivity: "private";
+  iCalUId?: string; // iCalendar UID for matching events
   location?: {
     displayName: string;
   };

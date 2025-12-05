@@ -176,6 +176,7 @@ export default async function handler(
 
     // Step 5: Delete orphaned events (exist in Exchange but not in iCloud)
     // Only delete orphaned events within the sync window (not old events outside window)
+    // IMPORTANT: Only delete events that have iCalUId set (synced events), not manually created ones
     console.log("Checking for orphaned events to delete (within sync window only)...");
     const existingEventsInWindow = await listEventsInWindow(
       accessToken,
@@ -186,13 +187,23 @@ export default async function handler(
     );
     
     const iCloudUids = new Set(iCloudEvents.map(e => e.uid));
-    const orphanedEvents = existingEventsInWindow.filter(e => 
-      e.iCalUId && !iCloudUids.has(e.iCalUId)
-    );
+    
+    // Only consider events with iCalUId as potential orphans (these are synced events)
+    // Events without iCalUId might be manually created and should be preserved
+    const orphanedEvents = existingEventsInWindow.filter(e => {
+      if (!e.iCalUId) {
+        // Event has no iCalUId - might be manually created, don't delete
+        return false;
+      }
+      // Event has iCalUId but doesn't match any iCloud event - it's an orphan
+      return !iCloudUids.has(e.iCalUId);
+    });
     
     let deletedCount = 0;
     if (orphanedEvents.length > 0) {
-      console.log(`Found ${orphanedEvents.length} orphaned event(s) to delete`);
+      console.log(`Found ${orphanedEvents.length} orphaned event(s) to delete (events with iCalUId that don't match iCloud)`);
+      console.log(`Orphaned events: ${orphanedEvents.map(e => `"${e.subject}" (${e.iCalUId})`).join(", ")}`);
+      
       for (const event of orphanedEvents) {
         try {
           const deleteUrl = `${GRAPH_BASE_URL}/users/${env.msUserId}/calendars/${targetCalendar.id}/events/${event.id}`;
@@ -204,6 +215,7 @@ export default async function handler(
           });
           if (deleteResponse.ok) {
             deletedCount++;
+            console.log(`Deleted orphaned event: "${event.subject}" (${event.iCalUId})`);
           } else {
             console.warn(`Failed to delete orphaned event "${event.subject}" (${event.id}): ${deleteResponse.status}`);
           }
@@ -214,6 +226,12 @@ export default async function handler(
       console.log(`Deleted ${deletedCount} orphaned event(s)`);
     } else {
       console.log("No orphaned events found");
+    }
+    
+    // Log events without iCalUId that were preserved
+    const eventsWithoutUid = existingEventsInWindow.filter(e => !e.iCalUId);
+    if (eventsWithoutUid.length > 0) {
+      console.log(`Preserved ${eventsWithoutUid.length} event(s) without iCalUId (likely manually created): ${eventsWithoutUid.map(e => `"${e.subject}"`).join(", ")}`);
     }
 
     const duration = Date.now() - startTime;
