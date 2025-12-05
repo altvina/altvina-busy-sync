@@ -443,6 +443,8 @@ export async function updateEvent(
         timeZone: timezone,
       },
       sensitivity: "private",
+      // Always set iCalUId to ensure future syncs can match by UID
+      iCalUId: event.uid,
     };
 
     // Only include showAs in the update if we're NOT preserving "free"
@@ -530,9 +532,18 @@ export async function syncEvents(
   // Get all existing events in the sync window to check for manual status changes
   const existingEvents = await listEventsInWindow(accessToken, userId, calendarId, window.start, window.end);
   const existingEventsByUid = new Map<string, GraphEventResponse>();
+  const existingEventsByTitleAndTime = new Map<string, GraphEventResponse>(); // Fallback: title + start time
+  
   existingEvents.forEach(e => {
     if (e.iCalUId) {
       existingEventsByUid.set(e.iCalUId, e);
+    }
+    // Also index by title + start time for fallback matching (for events created before iCalUId was set)
+    const startTime = new Date(e.start.dateTime).getTime();
+    const key = `${e.subject}|${startTime}`;
+    // Only add to fallback map if it doesn't already have a matching iCalUId
+    if (!existingEventsByTitleAndTime.has(key) || !e.iCalUId) {
+      existingEventsByTitleAndTime.set(key, e);
     }
   });
   
@@ -558,14 +569,27 @@ export async function syncEvents(
     processedUids.add(event.uid);
     
     // Check if event already exists in calendar
-    const existingEvent = existingEventsByUid.get(event.uid);
+    // First try matching by UID (preferred method)
+    let existingEvent = existingEventsByUid.get(event.uid);
+    
+    // Fallback: If no UID match, try matching by title + start time
+    // This handles events created before we started setting iCalUId
+    if (!existingEvent) {
+      const eventStartTime = event.start.getTime();
+      const fallbackKey = `${event.title}|${eventStartTime}`;
+      existingEvent = existingEventsByTitleAndTime.get(fallbackKey);
+      
+      if (existingEvent) {
+        console.log(`Found existing event by title+time fallback: "${event.title}" (will update iCalUId to ${event.uid})`);
+      }
+    }
     
     if (existingEvent) {
       // Event exists - update it, preserving showAs if it's "free"
       try {
         // Preserve showAs if it's "free" (user manually changed it)
         const preserveShowAs = existingEvent.showAs === "free" ? "free" : undefined;
-        console.log(`Updating existing event: "${event.title}" (UID: ${event.uid}, existing iCalUId: ${existingEvent.iCalUId}, existing showAs: ${existingEvent.showAs || "undefined"})`);
+        console.log(`Updating existing event: "${event.title}" (UID: ${event.uid}, existing iCalUId: ${existingEvent.iCalUId || "none"}, existing showAs: ${existingEvent.showAs || "undefined"})`);
         await updateEvent(
           accessToken,
           userId,
