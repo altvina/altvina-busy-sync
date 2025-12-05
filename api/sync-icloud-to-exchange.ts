@@ -8,8 +8,9 @@ import { fetchAllEvents } from "../lib/icloud.js";
 import {
   getAccessToken,
   findTargetCalendar,
-  deleteEventsInWindow,
-  createEvents,
+  syncEvents,
+  listEventsInWindow,
+  GRAPH_BASE_URL,
 } from "../lib/graph.js";
 import type { SyncWindow } from "../lib/types.js";
 
@@ -160,23 +161,10 @@ export default async function handler(
     );
     console.log(`Found target calendar: ${targetCalendar.id}`);
 
-    // Step 4: Delete all existing events in the sync window
-    // Full overwrite model: delete all events in the sync window
-    console.log(`Deleting existing events in sync window: ${window.start.toISOString()} to ${window.end.toISOString()}`);
-    const deletedCount = await deleteEventsInWindow(
-      accessToken,
-      env.msUserId,
-      targetCalendar.id,
-      window.start,
-      window.end,
-      env.timezone
-    );
-    console.log(`Deleted ${deletedCount} existing events`);
-
-    // Step 5: Create new events from iCloud
-    // Check for existing events by UID to prevent duplicates
-    console.log(`Creating ${iCloudEvents.length} new events...`);
-    const createdCount = await createEvents(
+    // Step 4: Sync events using update-or-create pattern
+    // This preserves manual showAs="free" status changes
+    console.log(`Syncing ${iCloudEvents.length} events from iCloud...`);
+    const syncResult = await syncEvents(
       accessToken,
       env.msUserId,
       targetCalendar.id,
@@ -184,7 +172,49 @@ export default async function handler(
       env.timezone,
       window
     );
-    console.log(`Created ${createdCount} new events`);
+    console.log(`Sync complete: ${syncResult.created} created, ${syncResult.updated} updated, ${syncResult.skipped} skipped`);
+
+    // Step 5: Delete orphaned events (exist in Exchange but not in iCloud)
+    // Get all existing events and find ones that don't match any iCloud event
+    console.log("Checking for orphaned events to delete...");
+    const existingEvents = await listEventsInWindow(
+      accessToken,
+      env.msUserId,
+      targetCalendar.id,
+      window.start,
+      window.end
+    );
+    
+    const iCloudUids = new Set(iCloudEvents.map(e => e.uid));
+    const orphanedEvents = existingEvents.filter(e => 
+      e.iCalUId && !iCloudUids.has(e.iCalUId)
+    );
+    
+    let deletedCount = 0;
+    if (orphanedEvents.length > 0) {
+      console.log(`Found ${orphanedEvents.length} orphaned event(s) to delete`);
+      for (const event of orphanedEvents) {
+        try {
+          const deleteUrl = `${GRAPH_BASE_URL}/users/${env.msUserId}/calendars/${targetCalendar.id}/events/${event.id}`;
+          const deleteResponse = await fetch(deleteUrl, {
+            method: "DELETE",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          });
+          if (deleteResponse.ok) {
+            deletedCount++;
+          } else {
+            console.warn(`Failed to delete orphaned event "${event.subject}" (${event.id}): ${deleteResponse.status}`);
+          }
+        } catch (error) {
+          console.error(`Error deleting orphaned event "${event.subject}":`, error);
+        }
+      }
+      console.log(`Deleted ${deletedCount} orphaned event(s)`);
+    } else {
+      console.log("No orphaned events found");
+    }
 
     const duration = Date.now() - startTime;
 
@@ -192,8 +222,10 @@ export default async function handler(
       success: true,
       stats: {
         fetched: iCloudEvents.length,
+        created: syncResult.created,
+        updated: syncResult.updated,
+        skipped: syncResult.skipped,
         deleted: deletedCount,
-        created: createdCount,
         durationMs: duration,
       },
       window: {
@@ -218,4 +250,5 @@ export default async function handler(
     });
   }
 }
+
 

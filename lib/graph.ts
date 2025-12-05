@@ -9,7 +9,7 @@ import type {
   NormalizedEvent,
 } from "./types.js";
 
-const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
+export const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 
 /**
  * Get OAuth access token using client credentials flow
@@ -142,7 +142,7 @@ export async function findTargetCalendar(
 /**
  * List all events in a calendar within a time window (with pagination support)
  */
-async function listEventsInWindow(
+export async function listEventsInWindow(
   accessToken: string,
   userId: string,
   calendarId: string,
@@ -163,8 +163,8 @@ async function listEventsInWindow(
     if (nextLink) {
       url = nextLink;
     } else {
-      // Request iCalUId field explicitly to match events by UID
-      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100&$select=id,subject,iCalUId,start,end`;
+      // Request iCalUId and showAs fields explicitly to match events by UID and preserve status
+      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100&$select=id,subject,iCalUId,showAs,start,end`;
     }
 
     const response = await fetch(url, {
@@ -365,74 +365,191 @@ export async function createEvent(
 }
 
 /**
- * Check if an event with the given UID already exists in the calendar
+ * Find an event by UID in the calendar
  */
-async function eventExistsByUid(
+async function findEventByUid(
   accessToken: string,
   userId: string,
   calendarId: string,
   uid: string,
   window: { start: Date; end: Date }
-): Promise<boolean> {
+): Promise<GraphEventResponse | null> {
   try {
     const events = await listEventsInWindow(accessToken, userId, calendarId, window.start, window.end);
-    // Check if any event has a matching iCalUId (Microsoft Graph stores UID in iCalUId field)
-    return events.some(e => e.iCalUId === uid);
+    // Find event with matching iCalUId (Microsoft Graph stores UID in iCalUId field)
+    return events.find(e => e.iCalUId === uid) || null;
   } catch (error) {
-    console.warn(`Error checking for existing event with UID ${uid}:`, error);
-    return false; // If check fails, proceed with creation
+    console.warn(`Error finding event with UID ${uid}:`, error);
+    return null;
   }
 }
 
 /**
- * Create multiple events in the Exchange calendar
- * Checks for existing events by UID to prevent duplicates
+ * Update an existing event in the Exchange calendar
+ * Preserves showAs status if it's "free" (user manually changed it)
  */
-export async function createEvents(
+export async function updateEvent(
+  accessToken: string,
+  userId: string,
+  calendarId: string,
+  eventId: string,
+  event: NormalizedEvent,
+  timezone: string,
+  preserveShowAs?: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown"
+): Promise<void> {
+  try {
+    // Format date for Graph API in the specified timezone
+    const formatDateTime = (date: Date, tz: string): string => {
+      const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      });
+      
+      const parts = formatter.formatToParts(date);
+      const year = parts.find(p => p.type === 'year')!.value;
+      const month = parts.find(p => p.type === 'month')!.value;
+      const day = parts.find(p => p.type === 'day')!.value;
+      const hour = parts.find(p => p.type === 'hour')!.value;
+      const minute = parts.find(p => p.type === 'minute')!.value;
+      const second = parts.find(p => p.type === 'second')!.value;
+      
+      return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+    };
+
+    const graphEvent: Partial<GraphEvent> = {
+      subject: event.title,
+      body: {
+        contentType: "text",
+        content: `${event.description}\n\nSynced UID: ${event.uid}`,
+      },
+      start: {
+        dateTime: formatDateTime(event.start, timezone),
+        timeZone: timezone,
+      },
+      end: {
+        dateTime: formatDateTime(event.end, timezone),
+        timeZone: timezone,
+      },
+      // Preserve showAs if user manually set it to "free", otherwise set to "busy"
+      showAs: preserveShowAs === "free" ? "free" : "busy",
+      sensitivity: "private",
+    };
+
+    if (event.location) {
+      graphEvent.location = {
+        displayName: event.location,
+      };
+    }
+
+    const url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/events/${eventId}`;
+
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(graphEvent),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `Failed to update event: ${response.status} ${response.statusText} - ${errorText}`
+      );
+    }
+    
+    if (preserveShowAs === "free") {
+      console.log(`Updated event "${event.title}" (preserved showAs: free)`);
+    }
+  } catch (error) {
+    console.error("Error updating event:", error);
+    throw error;
+  }
+}
+
+/**
+ * Sync events using update-or-create pattern
+ * Preserves manual showAs="free" status changes
+ * Returns counts of created, updated, and skipped events
+ */
+export async function syncEvents(
   accessToken: string,
   userId: string,
   calendarId: string,
   events: NormalizedEvent[],
   timezone: string,
   window: { start: Date; end: Date }
-): Promise<number> {
+): Promise<{ created: number; updated: number; skipped: number }> {
   let createdCount = 0;
-  let skippedDuplicates = 0;
-  const createdUids = new Set<string>(); // Track UIDs in the batch
+  let updatedCount = 0;
+  let skippedCount = 0;
+  const processedUids = new Set<string>(); // Track UIDs in the batch
+
+  // Get all existing events in the calendar to check for manual status changes
+  const existingEvents = await listEventsInWindow(accessToken, userId, calendarId, window.start, window.end);
+  const existingEventsByUid = new Map<string, GraphEventResponse>();
+  existingEvents.forEach(e => {
+    if (e.iCalUId) {
+      existingEventsByUid.set(e.iCalUId, e);
+    }
+  });
 
   for (const event of events) {
     // Check for duplicate UIDs in the batch
-    if (createdUids.has(event.uid)) {
+    if (processedUids.has(event.uid)) {
       console.warn(`Skipping duplicate UID in batch: "${event.title}" (${event.uid})`);
-      skippedDuplicates++;
+      skippedCount++;
       continue;
     }
-    createdUids.add(event.uid);
+    processedUids.add(event.uid);
     
     // Check if event already exists in calendar
-    const exists = await eventExistsByUid(accessToken, userId, calendarId, event.uid, window);
-    if (exists) {
-      console.warn(`Skipping event that already exists: "${event.title}" (${event.uid})`);
-      skippedDuplicates++;
-      continue;
-    }
+    const existingEvent = existingEventsByUid.get(event.uid);
     
-    try {
-      await createEvent(accessToken, userId, calendarId, event, timezone);
-      createdCount++;
-    } catch (error) {
-      console.error(
-        `Failed to create event "${event.title}" (${event.uid}):`,
-        error
-      );
-      // Continue with next event
+    if (existingEvent) {
+      // Event exists - update it, preserving showAs if it's "free"
+      try {
+        const preserveShowAs = existingEvent.showAs === "free" ? "free" : undefined;
+        await updateEvent(
+          accessToken,
+          userId,
+          calendarId,
+          existingEvent.id,
+          event,
+          timezone,
+          preserveShowAs
+        );
+        updatedCount++;
+      } catch (error) {
+        console.error(
+          `Failed to update event "${event.title}" (${event.uid}):`,
+          error
+        );
+        // Continue with next event
+      }
+    } else {
+      // Event doesn't exist - create it
+      try {
+        await createEvent(accessToken, userId, calendarId, event, timezone);
+        createdCount++;
+      } catch (error) {
+        console.error(
+          `Failed to create event "${event.title}" (${event.uid}):`,
+          error
+        );
+        // Continue with next event
+      }
     }
   }
 
-  if (skippedDuplicates > 0) {
-    console.log(`Skipped ${skippedDuplicates} duplicate event(s)`);
-  }
-
-  return createdCount;
+  return { created: createdCount, updated: updatedCount, skipped: skippedCount };
 }
+
 

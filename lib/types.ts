@@ -36,7 +36,7 @@ export interface GraphEvent {
     dateTime: string;
     timeZone: string;
   };
-  showAs: "busy";
+  showAs: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown";
   sensitivity: "private";
   location?: {
     displayName: string;
@@ -52,6 +52,7 @@ export interface GraphEventResponse {
   id: string;
   subject: string;
   iCalUId?: string; // iCalendar UID, used to match events
+  showAs?: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown"; // Preserve manual status changes
   start: {
     dateTime: string;
     timeZone: string;
@@ -61,4 +62,5 @@ export interface GraphEventResponse {
     timeZone: string;
   };
 }
+
 
