@@ -10,6 +10,7 @@ export interface NormalizedEvent {
   end: Date;
   location?: string;
   calendarName: string;
+  isAllDay?: boolean; // True if event is all-day (VALUE=DATE in iCalendar)
 }
 
 export interface SyncWindow {
@@ -36,6 +37,7 @@ export interface GraphEvent {
     dateTime: string;
     timeZone: string;
   };
+  isAllDay?: boolean; // True for all-day events (use UTC midnight dates)
   showAs: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown";
   sensitivity: "private";
   iCalUId?: string; // iCalendar UID for matching events

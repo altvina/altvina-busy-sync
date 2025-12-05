@@ -286,37 +286,50 @@ export async function createEvent(
   timezone: string
 ): Promise<string> {
   try {
-    // Format date for Graph API in the specified timezone
-    // Microsoft Graph expects dateTime in ISO 8601 format representing local time in the timezone
-    const formatDateTime = (date: Date, tz: string): string => {
-      // Create a formatter for the target timezone
-      const formatter = new Intl.DateTimeFormat('en-CA', {
-        timeZone: tz,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      });
-      
-      // Format the date - en-CA gives us YYYY-MM-DD format
-      const parts = formatter.formatToParts(date);
-      const year = parts.find(p => p.type === 'year')!.value;
-      const month = parts.find(p => p.type === 'month')!.value;
-      const day = parts.find(p => p.type === 'day')!.value;
-      const hour = parts.find(p => p.type === 'hour')!.value;
-      const minute = parts.find(p => p.type === 'minute')!.value;
-      const second = parts.find(p => p.type === 'second')!.value;
-      
-      return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+    // Format date for Graph API
+    // For all-day events: use UTC midnight format
+    // For timed events: use local time in the specified timezone
+    const formatDateTime = (date: Date, tz: string, isAllDay: boolean): string => {
+      if (isAllDay) {
+        // All-day events: format as UTC midnight (YYYY-MM-DDTHH:mm:ss)
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        return `${year}-${month}-${day}T00:00:00`;
+      } else {
+        // Timed events: format as local time in the specified timezone
+        const formatter = new Intl.DateTimeFormat('en-CA', {
+          timeZone: tz,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        });
+        
+        const parts = formatter.formatToParts(date);
+        const year = parts.find(p => p.type === 'year')!.value;
+        const month = parts.find(p => p.type === 'month')!.value;
+        const day = parts.find(p => p.type === 'day')!.value;
+        const hour = parts.find(p => p.type === 'hour')!.value;
+        const minute = parts.find(p => p.type === 'minute')!.value;
+        const second = parts.find(p => p.type === 'second')!.value;
+        
+        return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+      }
     };
     
-    // Log the conversion for debugging
-    const startFormatted = formatDateTime(event.start, timezone);
-    const endFormatted = formatDateTime(event.end, timezone);
-    console.log(`Creating event "${event.title}": start UTC=${event.start.toISOString()} -> ${startFormatted} (${timezone})`);
+    const isAllDay = event.isAllDay || false;
+    const startFormatted = formatDateTime(event.start, timezone, isAllDay);
+    const endFormatted = formatDateTime(event.end, timezone, isAllDay);
+    
+    if (isAllDay) {
+      console.log(`Creating all-day event "${event.title}": ${startFormatted} to ${endFormatted} (UTC)`);
+    } else {
+      console.log(`Creating event "${event.title}": start UTC=${event.start.toISOString()} -> ${startFormatted} (${timezone})`);
+    }
 
     const graphEvent: GraphEvent = {
       subject: event.title,
@@ -325,17 +338,22 @@ export async function createEvent(
         content: `${event.description}\n\nSynced UID: ${event.uid}`,
       },
       start: {
-        dateTime: formatDateTime(event.start, timezone),
-        timeZone: timezone,
+        dateTime: startFormatted,
+        timeZone: isAllDay ? "UTC" : timezone,
       },
       end: {
-        dateTime: formatDateTime(event.end, timezone),
-        timeZone: timezone,
+        dateTime: endFormatted,
+        timeZone: isAllDay ? "UTC" : timezone,
       },
       showAs: "busy",
       sensitivity: "private",
       iCalUId: event.uid, // Set iCalUId explicitly to match events by UID
     };
+
+    // Set isAllDay for all-day events
+    if (isAllDay) {
+      graphEvent.isAllDay = true;
+    }
 
     if (event.location) {
       graphEvent.location = {
@@ -404,29 +422,48 @@ export async function updateEvent(
   preserveShowAs?: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown"
 ): Promise<void> {
   try {
-    // Format date for Graph API in the specified timezone
-    const formatDateTime = (date: Date, tz: string): string => {
-      const formatter = new Intl.DateTimeFormat('en-CA', {
-        timeZone: tz,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      });
-      
-      const parts = formatter.formatToParts(date);
-      const year = parts.find(p => p.type === 'year')!.value;
-      const month = parts.find(p => p.type === 'month')!.value;
-      const day = parts.find(p => p.type === 'day')!.value;
-      const hour = parts.find(p => p.type === 'hour')!.value;
-      const minute = parts.find(p => p.type === 'minute')!.value;
-      const second = parts.find(p => p.type === 'second')!.value;
-      
-      return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+    // Format date for Graph API
+    // For all-day events: use UTC midnight format
+    // For timed events: use local time in the specified timezone
+    const formatDateTime = (date: Date, tz: string, isAllDay: boolean): string => {
+      if (isAllDay) {
+        // All-day events: format as UTC midnight (YYYY-MM-DDTHH:mm:ss)
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        return `${year}-${month}-${day}T00:00:00`;
+      } else {
+        // Timed events: format as local time in the specified timezone
+        const formatter = new Intl.DateTimeFormat('en-CA', {
+          timeZone: tz,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        });
+        
+        const parts = formatter.formatToParts(date);
+        const year = parts.find(p => p.type === 'year')!.value;
+        const month = parts.find(p => p.type === 'month')!.value;
+        const day = parts.find(p => p.type === 'day')!.value;
+        const hour = parts.find(p => p.type === 'hour')!.value;
+        const minute = parts.find(p => p.type === 'minute')!.value;
+        const second = parts.find(p => p.type === 'second')!.value;
+        
+        return `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+      }
     };
+
+    const isAllDay = event.isAllDay || false;
+    const startFormatted = formatDateTime(event.start, timezone, isAllDay);
+    const endFormatted = formatDateTime(event.end, timezone, isAllDay);
+
+    if (isAllDay) {
+      console.log(`Updating all-day event "${event.title}": ${startFormatted} to ${endFormatted} (UTC)`);
+    }
 
     const graphEvent: Partial<GraphEvent> = {
       subject: event.title,
@@ -435,17 +472,22 @@ export async function updateEvent(
         content: `${event.description}\n\nSynced UID: ${event.uid}`,
       },
       start: {
-        dateTime: formatDateTime(event.start, timezone),
-        timeZone: timezone,
+        dateTime: startFormatted,
+        timeZone: isAllDay ? "UTC" : timezone,
       },
       end: {
-        dateTime: formatDateTime(event.end, timezone),
-        timeZone: timezone,
+        dateTime: endFormatted,
+        timeZone: isAllDay ? "UTC" : timezone,
       },
       sensitivity: "private",
       // Always set iCalUId to ensure future syncs can match by UID
       iCalUId: event.uid,
     };
+
+    // Set isAllDay for all-day events
+    if (isAllDay) {
+      graphEvent.isAllDay = true;
+    }
 
     // Only include showAs in the update if we're NOT preserving "free"
     // If preserveShowAs is "free", omit showAs from PATCH to preserve existing value

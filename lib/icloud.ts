@@ -361,15 +361,36 @@ export async function fetchEvents(
       console.log(`Parsing calendar-data block (${icalText.length} chars), sample: ${icalText.substring(0, 200)}`);
 
       try {
+        // Check if this is an all-day event (VALUE=DATE format)
+        const isAllDay = /DTSTART[^:]*VALUE=DATE/i.test(icalText) || /DTEND[^:]*VALUE=DATE/i.test(icalText);
+        
         // Extract timezone and time info from raw iCalendar text
         // Look for DTSTART with timezone: DTSTART;TZID=America/Los_Angeles:20251205T093000
-        const dtstartMatch = icalText.match(/DTSTART(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
-        const eventTimezone = dtstartMatch ? (dtstartMatch[1] || null) : null;
-        const dtstartValue = dtstartMatch ? dtstartMatch[2] : null; // Format: 20251205T093000
+        // Or all-day format: DTSTART;VALUE=DATE:20251205
+        let dtstartMatch = icalText.match(/DTSTART(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
+        let eventTimezone = dtstartMatch ? (dtstartMatch[1] || null) : null;
+        let dtstartValue = dtstartMatch ? dtstartMatch[2] : null; // Format: 20251205T093000
+        
+        // If all-day, try to extract date-only format: DTSTART;VALUE=DATE:20251205
+        if (isAllDay && !dtstartValue) {
+          const dateOnlyMatch = icalText.match(/DTSTART[^:]*:(\d{8})/i);
+          if (dateOnlyMatch) {
+            dtstartValue = dateOnlyMatch[1]; // Format: 20251205 (no time)
+            eventTimezone = null; // All-day events don't have timezone
+          }
+        }
         
         // Also extract DTEND for end time
-        const dtendMatch = icalText.match(/DTEND(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
-        const dtendValue = dtendMatch ? dtendMatch[2] : null;
+        let dtendMatch = icalText.match(/DTEND(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
+        let dtendValue = dtendMatch ? dtendMatch[2] : null;
+        
+        // If all-day, try to extract date-only format for DTEND
+        if (isAllDay && !dtendValue) {
+          const dateOnlyMatch = icalText.match(/DTEND[^:]*:(\d{8})/i);
+          if (dateOnlyMatch) {
+            dtendValue = dateOnlyMatch[1]; // Format: 20251205 (no time)
+          }
+        }
         
         const jcalData = ICAL.parse(icalText);
         const comp = new ICAL.Component(jcalData);
@@ -378,7 +399,7 @@ export async function fetchEvents(
         const vevents = comp.getAllSubcomponents("vevent");
 
         for (const vevent of vevents) {
-          const normalized = normalizeEvent(vevent, calendarName, eventTimezone, dtstartValue, dtendValue);
+          const normalized = normalizeEvent(vevent, calendarName, eventTimezone, dtstartValue, dtendValue, isAllDay);
           if (normalized) {
             events.push(normalized);
           }
@@ -404,7 +425,8 @@ function normalizeEvent(
   calendarName: string,
   eventTimezone: string | null,
   dtstartValue: string | null,
-  dtendValue: string | null
+  dtendValue: string | null,
+  isAllDay: boolean = false
 ): NormalizedEvent | null {
   try {
     const event = new ICAL.Event(vevent);
@@ -430,12 +452,37 @@ function normalizeEvent(
     let startDate = startTime.toJSDate();
     let endDate = endTime.toJSDate();
 
-    // Fix timezone conversion issue with ical.js
+    // For all-day events, ensure they're at UTC midnight
+    // All-day events in iCalendar are date-only and should remain as UTC midnight
+    if (isAllDay) {
+      // Ensure start is at UTC midnight of the start date
+      startDate = new Date(Date.UTC(
+        startDate.getUTCFullYear(),
+        startDate.getUTCMonth(),
+        startDate.getUTCDate(),
+        0, 0, 0, 0
+      ));
+      // End date for all-day events should be UTC midnight of the day AFTER
+      // (iCalendar all-day events end at start of next day)
+      endDate = new Date(Date.UTC(
+        endDate.getUTCFullYear(),
+        endDate.getUTCMonth(),
+        endDate.getUTCDate(),
+        0, 0, 0, 0
+      ));
+      // If end date is same as start, it's a single-day event, so end should be next day
+      if (endDate.getTime() === startDate.getTime()) {
+        endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
+      }
+      console.log(`All-day event "${summary}": ${startDate.toISOString()} to ${endDate.toISOString()}`);
+    }
+    
+    // Fix timezone conversion issue with ical.js (only for timed events, not all-day)
     // Problem: toJSDate() sometimes treats timezone-aware times as UTC
     // Example: DTSTART;TZID=America/Los_Angeles:20251205T093000 (9:30 AM PT)
     // Should become: 2025-12-05T17:30:00.000Z (17:30 UTC, since PT is UTC-8)
     // But toJSDate() might return: 2025-12-05T09:30:00.000Z (treating 09:30 as UTC)
-    if (eventTimezone && eventTimezone !== 'UTC' && eventTimezone.includes('America/Los_Angeles') && dtstartValue) {
+    if (!isAllDay && eventTimezone && eventTimezone !== 'UTC' && eventTimezone.includes('America/Los_Angeles') && dtstartValue && dtstartValue.includes('T')) {
       // Parse the raw iCalendar time value: 20251205T093000
       // Extract hour to see what the original time was
       const timePart = dtstartValue.split('T')[1]; // "093000"
@@ -482,6 +529,7 @@ function normalizeEvent(
       end: endDate,
       location,
       calendarName,
+      isAllDay,
     };
   } catch (error) {
     console.error("Error normalizing event:", error);
