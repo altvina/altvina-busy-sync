@@ -179,8 +179,17 @@ export async function deleteEventsInWindow(
     const data = (await response.json()) as { value: GraphEventResponse[] };
     const events: GraphEventResponse[] = data.value || [];
 
+    console.log(`Found ${events.length} event(s) to delete in window ${startStr} to ${endStr}`);
+    
+    // Log event details for debugging duplicates
+    if (events.length > 0) {
+      console.log(`Events to delete: ${events.map(e => `"${e.subject}" (${e.start.dateTime})`).join(", ")}`);
+    }
+
     // Delete each event
     let deletedCount = 0;
+    let failedDeletes: string[] = [];
+    
     for (const event of events) {
       try {
         const deleteUrl = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/events/${event.id}`;
@@ -193,14 +202,22 @@ export async function deleteEventsInWindow(
 
         if (deleteResponse.ok) {
           deletedCount++;
+          console.log(`Deleted: "${event.subject}" (${event.start.dateTime})`);
         } else {
+          const errorText = await deleteResponse.text();
           console.warn(
-            `Failed to delete event ${event.id}: ${deleteResponse.status}`
+            `Failed to delete event "${event.subject}" (${event.id}): ${deleteResponse.status} - ${errorText}`
           );
+          failedDeletes.push(event.id);
         }
       } catch (error) {
-        console.error(`Error deleting event ${event.id}:`, error);
+        console.error(`Error deleting event "${event.subject}" (${event.id}):`, error);
+        failedDeletes.push(event.id);
       }
+    }
+    
+    if (failedDeletes.length > 0) {
+      console.warn(`Failed to delete ${failedDeletes.length} event(s): ${failedDeletes.join(", ")}`);
     }
 
     return deletedCount;
@@ -311,8 +328,16 @@ export async function createEvents(
   timezone: string
 ): Promise<number> {
   let createdCount = 0;
+  const createdUids = new Set<string>(); // Track UIDs to detect duplicates
 
   for (const event of events) {
+    // Check for duplicate UIDs in the batch
+    if (createdUids.has(event.uid)) {
+      console.warn(`Skipping duplicate UID in batch: "${event.title}" (${event.uid})`);
+      continue;
+    }
+    createdUids.add(event.uid);
+    
     try {
       await createEvent(accessToken, userId, calendarId, event, timezone);
       createdCount++;
