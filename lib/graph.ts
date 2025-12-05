@@ -595,8 +595,6 @@ export async function syncEvents(
   }
   
   return { created: createdCount, updated: updatedCount, skipped: skippedCount, createdEventIds };
-
-  return { created: createdCount, updated: updatedCount, skipped: skippedCount, createdEventIds };
 }
 
 
