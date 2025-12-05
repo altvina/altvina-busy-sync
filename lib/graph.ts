@@ -495,6 +495,7 @@ export async function syncEvents(
 
   // Calculate extended window based on actual event dates
   // This ensures we find existing events even if they're outside the sync window
+  // Microsoft Graph API limits calendarView to 1825 days (5 years), so we must respect that
   let extendedStart = window.start;
   let extendedEnd = window.end;
   
@@ -508,13 +509,23 @@ export async function syncEvents(
     extendedStart = new Date(Math.min(window.start.getTime(), minEventTime - 24 * 60 * 60 * 1000)); // 1 day before earliest
     extendedEnd = new Date(Math.max(window.end.getTime(), maxEventTime + 24 * 60 * 60 * 1000)); // 1 day after latest
     
-    // Cap at reasonable limits (10 years back, 2 years forward)
-    const now = Date.now();
-    const tenYearsAgo = now - (10 * 365 * 24 * 60 * 60 * 1000);
-    const twoYearsAhead = now + (2 * 365 * 24 * 60 * 60 * 1000);
+    // Microsoft Graph API maximum range is 1825 days (5 years)
+    // Cap the extended window to ensure we don't exceed this limit
+    const maxDays = 1825;
+    const maxRangeMs = maxDays * 24 * 60 * 60 * 1000;
     
-    extendedStart = new Date(Math.max(extendedStart.getTime(), tenYearsAgo));
-    extendedEnd = new Date(Math.min(extendedEnd.getTime(), twoYearsAhead));
+    // If the range is too large, prioritize the sync window and extend only within limits
+    const rangeMs = extendedEnd.getTime() - extendedStart.getTime();
+    if (rangeMs > maxRangeMs) {
+      // Range is too large - use sync window as base and extend only within 5 year limit
+      // Prioritize recent events (extend backward from sync window end)
+      const syncWindowEnd = window.end.getTime();
+      extendedEnd = new Date(syncWindowEnd);
+      extendedStart = new Date(syncWindowEnd - maxRangeMs);
+      
+      console.log(`Extended window exceeds ${maxDays} days limit. Capping to: ${extendedStart.toISOString()} to ${extendedEnd.toISOString()}`);
+      console.log(`Note: Very old events (before ${extendedStart.toISOString()}) will be treated as new and may be recreated`);
+    }
     
     extendedStart.setHours(0, 0, 0, 0);
     extendedEnd.setHours(23, 59, 59, 999);
