@@ -51,6 +51,7 @@ export interface GraphCalendar {
 export interface GraphEventResponse {
   id: string;
   subject: string;
+  iCalUId?: string; // iCalendar UID, used to match events
   start: {
     dateTime: string;
     timeZone: string;

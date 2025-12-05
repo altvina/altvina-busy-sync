@@ -140,27 +140,31 @@ export async function findTargetCalendar(
 }
 
 /**
- * Delete all events in a calendar within the specified time window
+ * List all events in a calendar within a time window (with pagination support)
  */
-export async function deleteEventsInWindow(
+async function listEventsInWindow(
   accessToken: string,
   userId: string,
   calendarId: string,
   start: Date,
-  end: Date,
-  timezone: string
-): Promise<number> {
-  try {
-    // Format dates for Graph API (ISO 8601 UTC)
-    const formatDate = (date: Date): string => {
-      return date.toISOString();
-    };
+  end: Date
+): Promise<GraphEventResponse[]> {
+  const formatDate = (date: Date): string => {
+    return date.toISOString();
+  };
 
-    const startStr = formatDate(start);
-    const endStr = formatDate(end);
+  const startStr = formatDate(start);
+  const endStr = formatDate(end);
+  const allEvents: GraphEventResponse[] = [];
+  let nextLink: string | null = null;
 
-    // Use calendarView endpoint for reliable date range queries (handles recurring events)
-    const url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}`;
+  do {
+    let url: string;
+    if (nextLink) {
+      url = nextLink;
+    } else {
+      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100`;
+    }
 
     const response = await fetch(url, {
       headers: {
@@ -176,14 +180,56 @@ export async function deleteEventsInWindow(
       );
     }
 
-    const data = (await response.json()) as { value: GraphEventResponse[] };
-    const events: GraphEventResponse[] = data.value || [];
+    const data = (await response.json()) as { 
+      value: GraphEventResponse[];
+      "@odata.nextLink"?: string;
+    };
+    
+    allEvents.push(...(data.value || []));
+    nextLink = data["@odata.nextLink"] || null;
+  } while (nextLink);
 
-    console.log(`Found ${events.length} event(s) to delete in window ${startStr} to ${endStr}`);
+  return allEvents;
+}
+
+/**
+ * Delete all events in a calendar within the specified time window
+ * Handles pagination to ensure all events are deleted
+ */
+export async function deleteEventsInWindow(
+  accessToken: string,
+  userId: string,
+  calendarId: string,
+  start: Date,
+  end: Date,
+  timezone: string
+): Promise<number> {
+  try {
+    const startStr = start.toISOString();
+    const endStr = end.toISOString();
+
+    console.log(`Querying events to delete in window ${startStr} to ${endStr}`);
+    
+    // Get all events (with pagination)
+    const events = await listEventsInWindow(accessToken, userId, calendarId, start, end);
+
+    console.log(`Found ${events.length} event(s) to delete`);
     
     // Log event details for debugging duplicates
     if (events.length > 0) {
-      console.log(`Events to delete: ${events.map(e => `"${e.subject}" (${e.start.dateTime})`).join(", ")}`);
+      const eventSummary = events.map(e => `"${e.subject}" (${e.start.dateTime})`).slice(0, 10);
+      console.log(`Events to delete (showing first 10): ${eventSummary.join(", ")}${events.length > 10 ? ` ... and ${events.length - 10} more` : ""}`);
+      
+      // Check for duplicates by subject and time
+      const eventMap = new Map<string, number>();
+      events.forEach(e => {
+        const key = `${e.subject}|${e.start.dateTime}`;
+        eventMap.set(key, (eventMap.get(key) || 0) + 1);
+      });
+      const duplicates = Array.from(eventMap.entries()).filter(([_, count]) => count > 1);
+      if (duplicates.length > 0) {
+        console.warn(`Found ${duplicates.length} duplicate event pattern(s) in calendar: ${duplicates.map(([key]) => key).join(", ")}`);
+      }
     }
 
     // Delete each event
@@ -202,7 +248,6 @@ export async function deleteEventsInWindow(
 
         if (deleteResponse.ok) {
           deletedCount++;
-          console.log(`Deleted: "${event.subject}" (${event.start.dateTime})`);
         } else {
           const errorText = await deleteResponse.text();
           console.warn(
@@ -220,6 +265,7 @@ export async function deleteEventsInWindow(
       console.warn(`Failed to delete ${failedDeletes.length} event(s): ${failedDeletes.join(", ")}`);
     }
 
+    console.log(`Successfully deleted ${deletedCount} of ${events.length} event(s)`);
     return deletedCount;
   } catch (error) {
     console.error("Error deleting events in window:", error);
@@ -318,25 +364,57 @@ export async function createEvent(
 }
 
 /**
+ * Check if an event with the given UID already exists in the calendar
+ */
+async function eventExistsByUid(
+  accessToken: string,
+  userId: string,
+  calendarId: string,
+  uid: string,
+  window: { start: Date; end: Date }
+): Promise<boolean> {
+  try {
+    const events = await listEventsInWindow(accessToken, userId, calendarId, window.start, window.end);
+    // Check if any event has a matching iCalUId (Microsoft Graph stores UID in iCalUId field)
+    return events.some(e => e.iCalUId === uid);
+  } catch (error) {
+    console.warn(`Error checking for existing event with UID ${uid}:`, error);
+    return false; // If check fails, proceed with creation
+  }
+}
+
+/**
  * Create multiple events in the Exchange calendar
+ * Checks for existing events by UID to prevent duplicates
  */
 export async function createEvents(
   accessToken: string,
   userId: string,
   calendarId: string,
   events: NormalizedEvent[],
-  timezone: string
+  timezone: string,
+  window: { start: Date; end: Date }
 ): Promise<number> {
   let createdCount = 0;
-  const createdUids = new Set<string>(); // Track UIDs to detect duplicates
+  let skippedDuplicates = 0;
+  const createdUids = new Set<string>(); // Track UIDs in the batch
 
   for (const event of events) {
     // Check for duplicate UIDs in the batch
     if (createdUids.has(event.uid)) {
       console.warn(`Skipping duplicate UID in batch: "${event.title}" (${event.uid})`);
+      skippedDuplicates++;
       continue;
     }
     createdUids.add(event.uid);
+    
+    // Check if event already exists in calendar
+    const exists = await eventExistsByUid(accessToken, userId, calendarId, event.uid, window);
+    if (exists) {
+      console.warn(`Skipping event that already exists: "${event.title}" (${event.uid})`);
+      skippedDuplicates++;
+      continue;
+    }
     
     try {
       await createEvent(accessToken, userId, calendarId, event, timezone);
@@ -348,6 +426,10 @@ export async function createEvents(
       );
       // Continue with next event
     }
+  }
+
+  if (skippedDuplicates > 0) {
+    console.log(`Skipped ${skippedDuplicates} duplicate event(s)`);
   }
 
   return createdCount;

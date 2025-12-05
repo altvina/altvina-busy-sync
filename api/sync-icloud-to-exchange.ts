@@ -32,27 +32,6 @@ function calculateSyncWindow(
   return { start, end };
 }
 
-/**
- * Calculate extended delete window to catch old test events
- * Deletes events from further back to ensure clean slate
- */
-function calculateDeleteWindow(
-  lookbackDays: number,
-  lookaheadDays: number
-): SyncWindow {
-  const now = new Date();
-  // Delete from 30 days ago to catch old test events
-  const start = new Date(now);
-  start.setDate(start.getDate() - 30);
-  start.setHours(0, 0, 0, 0);
-
-  // Delete up to the same lookahead
-  const end = new Date(now);
-  end.setDate(end.getDate() + lookaheadDays);
-  end.setHours(23, 59, 59, 999);
-
-  return { start, end };
-}
 
 /**
  * Validate required environment variables
@@ -181,31 +160,29 @@ export default async function handler(
     );
     console.log(`Found target calendar: ${targetCalendar.id}`);
 
-    // Step 4: Delete all existing events in an extended window
-    // Use extended window to catch old test events outside sync range
-    const deleteWindow = calculateDeleteWindow(
-      env.syncLookbackDays,
-      env.syncLookaheadDays
-    );
-    console.log(`Deleting existing events in extended window: ${deleteWindow.start.toISOString()} to ${deleteWindow.end.toISOString()}`);
+    // Step 4: Delete all existing events in the sync window
+    // Full overwrite model: delete all events in the sync window
+    console.log(`Deleting existing events in sync window: ${window.start.toISOString()} to ${window.end.toISOString()}`);
     const deletedCount = await deleteEventsInWindow(
       accessToken,
       env.msUserId,
       targetCalendar.id,
-      deleteWindow.start,
-      deleteWindow.end,
+      window.start,
+      window.end,
       env.timezone
     );
     console.log(`Deleted ${deletedCount} existing events`);
 
     // Step 5: Create new events from iCloud
+    // Check for existing events by UID to prevent duplicates
     console.log(`Creating ${iCloudEvents.length} new events...`);
     const createdCount = await createEvents(
       accessToken,
       env.msUserId,
       targetCalendar.id,
       iCloudEvents,
-      env.timezone
+      env.timezone,
+      window
     );
     console.log(`Created ${createdCount} new events`);
 
