@@ -276,6 +276,7 @@ export async function deleteEventsInWindow(
 
 /**
  * Create a new event in the Exchange calendar
+ * Returns the created event ID
  */
 export async function createEvent(
   accessToken: string,
@@ -283,7 +284,7 @@ export async function createEvent(
   calendarId: string,
   event: NormalizedEvent,
   timezone: string
-): Promise<void> {
+): Promise<string> {
   try {
     // Format date for Graph API in the specified timezone
     // Microsoft Graph expects dateTime in ISO 8601 format representing local time in the timezone
@@ -359,6 +360,10 @@ export async function createEvent(
         `Failed to create event: ${response.status} ${response.statusText} - ${errorText}`
       );
     }
+    
+    // Return the created event ID so we can track it
+    const createdEvent = (await response.json()) as { id: string };
+    return createdEvent.id;
   } catch (error) {
     console.error("Error creating event:", error);
     throw error;
@@ -478,7 +483,7 @@ export async function updateEvent(
 /**
  * Sync events using update-or-create pattern
  * Preserves manual showAs="free" status changes
- * Returns counts of created, updated, and skipped events
+ * Returns counts of created, updated, and skipped events, plus IDs of created/updated events
  */
 export async function syncEvents(
   accessToken: string,
@@ -487,7 +492,7 @@ export async function syncEvents(
   events: NormalizedEvent[],
   timezone: string,
   window: { start: Date; end: Date }
-): Promise<{ created: number; updated: number; skipped: number }> {
+): Promise<{ created: number; updated: number; skipped: number; createdEventIds: Set<string> }> {
   let createdCount = 0;
   let updatedCount = 0;
   let skippedCount = 0;
@@ -530,6 +535,9 @@ export async function syncEvents(
     console.log(`Sample existing UIDs: ${sampleUids.join(", ")}`);
   }
 
+  // Track events we create in this sync so we don't delete them as orphans
+  const createdEventIds = new Set<string>();
+  
   // Only sync events within the sync window
   for (const event of eventsInWindow) {
     // Check for duplicate UIDs in the batch
@@ -558,6 +566,8 @@ export async function syncEvents(
           preserveShowAs
         );
         updatedCount++;
+        // Track this event so we don't delete it
+        createdEventIds.add(existingEvent.id);
       } catch (error) {
         console.error(
           `Failed to update event "${event.title}" (${event.uid}):`,
@@ -569,8 +579,11 @@ export async function syncEvents(
       // Event doesn't exist - create it
       try {
         console.log(`Creating new event: "${event.title}" (UID: ${event.uid})`);
-        await createEvent(accessToken, userId, calendarId, event, timezone);
+        const createdEventId = await createEvent(accessToken, userId, calendarId, event, timezone);
         createdCount++;
+        if (createdEventId) {
+          createdEventIds.add(createdEventId);
+        }
       } catch (error) {
         console.error(
           `Failed to create event "${event.title}" (${event.uid}):`,
@@ -580,8 +593,10 @@ export async function syncEvents(
       }
     }
   }
+  
+  return { created: createdCount, updated: updatedCount, skipped: skippedCount, createdEventIds };
 
-  return { created: createdCount, updated: updatedCount, skipped: skippedCount };
+  return { created: createdCount, updated: updatedCount, skipped: skippedCount, createdEventIds };
 }
 
 

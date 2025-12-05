@@ -190,7 +190,12 @@ export default async function handler(
     
     // Only consider events with iCalUId as potential orphans (these are synced events)
     // Events without iCalUId might be manually created and should be preserved
+    // Also exclude events we just created/updated in this sync
     const orphanedEvents = existingEventsInWindow.filter(e => {
+      // Don't delete events we just created/updated
+      if (syncResult.createdEventIds.has(e.id)) {
+        return false;
+      }
       if (!e.iCalUId) {
         // Event has no iCalUId - might be manually created, don't delete
         return false;
