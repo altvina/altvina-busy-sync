@@ -442,10 +442,17 @@ export async function updateEvent(
         dateTime: formatDateTime(event.end, timezone),
         timeZone: timezone,
       },
-      // Preserve showAs if user manually set it to "free", otherwise set to "busy"
-      showAs: preserveShowAs === "free" ? "free" : "busy",
       sensitivity: "private",
     };
+
+    // Only include showAs in the update if we're NOT preserving "free"
+    // If preserveShowAs is "free", omit showAs from PATCH to preserve existing value
+    // Otherwise, set it to "busy" (default for synced events)
+    if (preserveShowAs !== "free") {
+      graphEvent.showAs = "busy";
+    }
+    // If preserveShowAs === "free", we don't include showAs in the PATCH,
+    // which means Microsoft Graph will leave the existing "free" value unchanged
 
     if (event.location) {
       graphEvent.location = {
@@ -473,6 +480,8 @@ export async function updateEvent(
     
     if (preserveShowAs === "free") {
       console.log(`Updated event "${event.title}" (preserved showAs: free)`);
+    } else {
+      console.log(`Updated event "${event.title}" (set showAs: busy)`);
     }
   } catch (error) {
     console.error("Error updating event:", error);
@@ -554,8 +563,9 @@ export async function syncEvents(
     if (existingEvent) {
       // Event exists - update it, preserving showAs if it's "free"
       try {
+        // Preserve showAs if it's "free" (user manually changed it)
         const preserveShowAs = existingEvent.showAs === "free" ? "free" : undefined;
-        console.log(`Updating existing event: "${event.title}" (UID: ${event.uid}, existing iCalUId: ${existingEvent.iCalUId})`);
+        console.log(`Updating existing event: "${event.title}" (UID: ${event.uid}, existing iCalUId: ${existingEvent.iCalUId}, existing showAs: ${existingEvent.showAs || "undefined"})`);
         await updateEvent(
           accessToken,
           userId,
