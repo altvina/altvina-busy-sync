@@ -42,6 +42,7 @@ function validateEnvVars(): {
   icloudPassword: string;
   icloudCal1: string;
   icloudCal2: string;
+  icloudCal3?: string; // Optional public calendar URL
   msTenantId: string;
   msClientId: string;
   msClientSecret: string;
@@ -56,6 +57,7 @@ function validateEnvVars(): {
     ICLOUD_APP_PASSWORD: process.env.ICLOUD_APP_PASSWORD,
     ICLOUD_CAL1: process.env.ICLOUD_CAL1,
     ICLOUD_CAL2: process.env.ICLOUD_CAL2,
+    ICLOUD_CAL3: process.env.ICLOUD_CAL3, // Optional
     MS_TENANT_ID: process.env.MS_TENANT_ID,
     MS_CLIENT_ID: process.env.MS_CLIENT_ID,
     MS_CLIENT_SECRET: process.env.MS_CLIENT_SECRET,
@@ -66,8 +68,9 @@ function validateEnvVars(): {
     TIMEZONE: process.env.TIMEZONE,
   };
 
+  // ICLOUD_CAL3 is optional, exclude it from required check
   const missing = Object.entries(requiredVars)
-    .filter(([_, value]) => !value)
+    .filter(([key, value]) => !value && key !== 'ICLOUD_CAL3')
     .map(([key]) => key);
 
   if (missing.length > 0) {
@@ -93,6 +96,7 @@ function validateEnvVars(): {
     icloudPassword: trimEnvVar(requiredVars.ICLOUD_APP_PASSWORD!),
     icloudCal1: trimEnvVar(requiredVars.ICLOUD_CAL1!),
     icloudCal2: trimEnvVar(requiredVars.ICLOUD_CAL2!),
+    icloudCal3: requiredVars.ICLOUD_CAL3 ? trimEnvVar(requiredVars.ICLOUD_CAL3) : undefined,
     msTenantId: trimEnvVar(requiredVars.MS_TENANT_ID!),
     msClientId: trimEnvVar(requiredVars.MS_CLIENT_ID!),
     msClientSecret: trimEnvVar(requiredVars.MS_CLIENT_SECRET!),
@@ -129,17 +133,36 @@ export default async function handler(
     );
 
     // Step 1: Fetch events from iCloud calendars
+    const calendarList = [env.icloudCal1, env.icloudCal2];
+    const calendarListStr = calendarList.join(", ");
+    
     console.log(
-      `Fetching events from iCloud calendars: ${env.icloudCal1}, ${env.icloudCal2}`
+      `Fetching events from CalDAV calendars: ${calendarListStr}`
     );
     const iCloudEvents = await fetchAllEvents(
       env.icloudUsername,
       env.icloudPassword,
-      [env.icloudCal1, env.icloudCal2],
+      calendarList,
       window.start,
       window.end
     );
-    console.log(`Fetched ${iCloudEvents.length} events from iCloud`);
+    console.log(`Fetched ${iCloudEvents.length} events from CalDAV calendars`);
+    
+    // Step 1b: Fetch events from public calendar URL if configured
+    if (env.icloudCal3) {
+      console.log(`Fetching events from public calendar URL: ${env.icloudCal3}`);
+      const { fetchPublicCalendarEvents } = await import("../lib/icloud.js");
+      const publicEvents = await fetchPublicCalendarEvents(
+        env.icloudCal3,
+        "Personal Calendar",
+        window.start,
+        window.end
+      );
+      console.log(`Fetched ${publicEvents.length} events from public calendar`);
+      iCloudEvents.push(...publicEvents);
+    }
+    
+    console.log(`Total events fetched from all sources: ${iCloudEvents.length}`);
 
     // Step 2: Get Microsoft Graph access token
     console.log("Getting Microsoft Graph access token...");

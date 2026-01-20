@@ -588,4 +588,78 @@ export async function fetchAllEvents(
   return allEvents;
 }
 
+/**
+ * Fetch events from a public calendar URL (webcal:// or https://)
+ * Public calendars are typically .ics files that can be fetched via HTTP
+ */
+export async function fetchPublicCalendarEvents(
+  calendarUrl: string,
+  calendarName: string,
+  start: Date,
+  end: Date
+): Promise<NormalizedEvent[]> {
+  try {
+    // Convert webcal:// to https://
+    const httpUrl = calendarUrl.replace(/^webcal:\/\//i, "https://");
+    
+    console.log(`Fetching public calendar from: ${httpUrl}`);
+    
+    const response = await fetch(httpUrl);
+    
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch public calendar: ${response.status} ${response.statusText}`
+      );
+    }
+    
+    const icalText = await response.text();
+    console.log(`Fetched public calendar .ics file (${icalText.length} chars)`);
+    
+    // Parse the iCalendar data
+    const jcalData = ICAL.parse(icalText);
+    const comp = new ICAL.Component(jcalData);
+    
+    // Get all VEVENT components
+    const vevents = comp.getAllSubcomponents("vevent");
+    console.log(`Found ${vevents.length} events in public calendar`);
+    
+    const events: NormalizedEvent[] = [];
+    
+    for (const vevent of vevents) {
+      try {
+        // Check if this is an all-day event
+        const rawText = vevent.toString();
+        const isAllDay = /DTSTART[^:]*VALUE=DATE/i.test(rawText) || /DTEND[^:]*VALUE=DATE/i.test(rawText);
+        
+        // Extract timezone from DTSTART
+        const dtstartMatch = rawText.match(/DTSTART(?:;[^:]*TZID=([^:;]+))?:(\d{8}T?\d{0,6})/i);
+        const eventTimezone = dtstartMatch ? (dtstartMatch[1] || null) : null;
+        const dtstartValue = dtstartMatch ? dtstartMatch[2] : null;
+        
+        // Extract DTEND
+        const dtendMatch = rawText.match(/DTEND(?:;[^:]*TZID=([^:;]+))?:(\d{8}T?\d{0,6})/i);
+        const dtendValue = dtendMatch ? dtendMatch[2] : null;
+        
+        const normalized = normalizeEvent(vevent, calendarName, eventTimezone, dtstartValue, dtendValue, isAllDay);
+        
+        if (normalized) {
+          // Filter events to only include those within the sync window
+          if (normalized.start <= end && normalized.end >= start) {
+            events.push(normalized);
+          }
+        }
+      } catch (error) {
+        console.error("Error parsing event from public calendar:", error);
+        // Continue with next event
+      }
+    }
+    
+    console.log(`Filtered to ${events.length} events within sync window`);
+    return events;
+  } catch (error) {
+    console.error(`Error fetching public calendar from ${calendarUrl}:`, error);
+    throw error;
+  }
+}
+
 

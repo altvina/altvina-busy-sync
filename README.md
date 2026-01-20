@@ -6,7 +6,8 @@ A Vercel serverless function that synchronizes specific iCloud calendars into a 
 
 This application:
 - Connects to iCloud via CalDAV
-- Reads events from two personal iCloud calendars
+- Reads events from two personal iCloud calendars (by name)
+- Optionally reads events from a third public calendar (by URL)
 - Deletes all events in the target Exchange calendar within the sync window
 - Recreates all events as Busy blocks with full titles and descriptions
 - Ensures Calendly can accurately evaluate availability
@@ -29,6 +30,7 @@ Configure these environment variables in your Vercel project settings:
 - `ICLOUD_APP_PASSWORD` - Apple app-specific password (see setup instructions below)
 - `ICLOUD_CAL1` - First calendar name to sync (e.g., `"Shared Calendar"`)
 - `ICLOUD_CAL2` - Second calendar name to sync (e.g., `"Jay - Personal"`)
+- `ICLOUD_CAL3` - (Optional) Public calendar URL to sync (e.g., `webcal://p101-caldav.icloud.com/published/2/...`)
 
 ### Microsoft Graph Configuration
 
@@ -60,7 +62,23 @@ iCloud requires an app-specific password for CalDAV access:
 
 **Note**: Do not use your regular Apple ID password. App-specific passwords are required for CalDAV access.
 
-### 2. Microsoft Graph API Setup
+### 2. Public Calendar URL (Optional)
+
+If you want to sync a public iCloud calendar (like a published calendar):
+
+1. In iCloud Calendar, right-click the calendar you want to share
+2. Select **Share Calendar** → **Public Calendar**
+3. Copy the calendar URL (it will start with `webcal://`)
+4. Set this as `ICLOUD_CAL3` in Vercel
+
+**Note**: The public calendar URL format is typically:
+```
+webcal://p101-caldav.icloud.com/published/2/[UNIQUE_ID]
+```
+
+Public calendars are read-only and don't require authentication. Events from this calendar will be synced along with your CalDAV calendars.
+
+### 3. Microsoft Graph API Setup
 
 #### Create Azure AD Application
 
@@ -96,7 +114,7 @@ iCloud requires an app-specific password for CalDAV access:
 2. Create a new calendar named exactly as specified in `MS_TARGET_CALENDAR_NAME`
 3. Ensure the calendar is accessible via Microsoft Graph API
 
-### 3. Vercel Configuration
+### 4. Vercel Configuration
 
 #### Deploy the Project
 
@@ -147,6 +165,7 @@ This runs the sync every 15 minutes. The cron job is automatically enabled when 
    ICLOUD_APP_PASSWORD=your-app-password
    ICLOUD_CAL1=Shared Calendar
    ICLOUD_CAL2=Jay - Personal
+   ICLOUD_CAL3=webcal://p101-caldav.icloud.com/published/2/YOUR_UNIQUE_ID
    MS_TENANT_ID=your-tenant-id
    MS_CLIENT_ID=your-client-id
    MS_CLIENT_SECRET=your-client-secret
@@ -179,9 +198,10 @@ npm run type-check
 
 1. **Calculate Window**: Determines the time range based on `SYNC_LOOKBACK_DAYS` and `SYNC_LOOKAHEAD_DAYS`
 2. **Fetch iCloud Events**: 
-   - Discovers calendars matching `ICLOUD_CAL1` and `ICLOUD_CAL2`
+   - Discovers calendars matching `ICLOUD_CAL1` and `ICLOUD_CAL2` via CalDAV
    - Excludes "Holidays", "Birthdays", and "Reminders" calendars
    - Fetches all events in the sync window using CalDAV REPORT
+   - If `ICLOUD_CAL3` is configured, fetches events from the public calendar URL
 3. **Authenticate with Microsoft Graph**: Gets OAuth token using client credentials flow
 4. **Find Target Calendar**: Locates the Exchange calendar by name
 5. **Delete Existing Events**: Removes all events in the target calendar within the sync window
