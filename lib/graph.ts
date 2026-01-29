@@ -164,7 +164,7 @@ export async function listEventsInWindow(
       url = nextLink;
     } else {
       // Request iCalUId and showAs fields explicitly to match events by UID and preserve status
-      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100&$select=id,subject,iCalUId,showAs,start,end`;
+      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100&$select=id,subject,iCalUId,showAs,start,end,isAllDay`;
     }
 
     const response = await fetch(url, {

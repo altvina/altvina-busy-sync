@@ -4,7 +4,14 @@
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { fetchAllEvents } from "../lib/icloud.js";
+import {
+  fetchAllEvents,
+  discoverCalendars,
+  fetchEvents,
+  createOrUpdateIcloudEvent,
+  deleteIcloudEventByUrl,
+  ALTVINA_EXCHANGE_UID_PREFIX,
+} from "../lib/icloud.js";
 import {
   getAccessToken,
   findTargetCalendar,
@@ -48,6 +55,8 @@ function validateEnvVars(): {
   msClientSecret: string;
   msUserId: string;
   msTargetCalendarName: string;
+  msSourceCalendarName?: string; // Optional: Exchange calendar to read for Exchange→iCloud sync
+  icloudJayCalendarName?: string; // Optional: iCloud calendar to write "Altvina Engagement" blocks to
   syncLookbackDays: number;
   syncLookaheadDays: number;
   timezone: string;
@@ -63,14 +72,16 @@ function validateEnvVars(): {
     MS_CLIENT_SECRET: process.env.MS_CLIENT_SECRET,
     MS_USER_ID: process.env.MS_USER_ID,
     MS_TARGET_CALENDAR_NAME: process.env.MS_TARGET_CALENDAR_NAME,
+    MS_SOURCE_CALENDAR_NAME: process.env.MS_SOURCE_CALENDAR_NAME, // Optional
+    ICLOUD_JAY_CALENDAR_NAME: process.env.ICLOUD_JAY_CALENDAR_NAME, // Optional
     SYNC_LOOKBACK_DAYS: process.env.SYNC_LOOKBACK_DAYS,
     SYNC_LOOKAHEAD_DAYS: process.env.SYNC_LOOKAHEAD_DAYS,
     TIMEZONE: process.env.TIMEZONE,
   };
 
-  // ICLOUD_CAL3 is optional, exclude it from required check
+  // ICLOUD_CAL3, MS_SOURCE_CALENDAR_NAME, ICLOUD_JAY_CALENDAR_NAME are optional
   const missing = Object.entries(requiredVars)
-    .filter(([key, value]) => !value && key !== 'ICLOUD_CAL3')
+    .filter(([key, value]) => !value && !['ICLOUD_CAL3', 'MS_SOURCE_CALENDAR_NAME', 'ICLOUD_JAY_CALENDAR_NAME'].includes(key))
     .map(([key]) => key);
 
   if (missing.length > 0) {
@@ -102,6 +113,8 @@ function validateEnvVars(): {
     msClientSecret: trimEnvVar(requiredVars.MS_CLIENT_SECRET!),
     msUserId: trimEnvVar(requiredVars.MS_USER_ID!),
     msTargetCalendarName: trimEnvVar(requiredVars.MS_TARGET_CALENDAR_NAME!),
+    msSourceCalendarName: requiredVars.MS_SOURCE_CALENDAR_NAME ? trimEnvVar(requiredVars.MS_SOURCE_CALENDAR_NAME) : undefined,
+    icloudJayCalendarName: requiredVars.ICLOUD_JAY_CALENDAR_NAME ? trimEnvVar(requiredVars.ICLOUD_JAY_CALENDAR_NAME) : undefined,
     syncLookbackDays: lookbackDays,
     syncLookaheadDays: lookaheadDays,
     timezone: trimEnvVar(requiredVars.TIMEZONE!),
@@ -262,6 +275,85 @@ export default async function handler(
       console.log(`Preserved ${eventsWithoutUid.length} event(s) without iCalUId (likely manually created): ${eventsWithoutUid.map(e => `"${e.subject}"`).join(", ")}`);
     }
 
+    // Exchange → iCloud: sync Altvina busy events to Jay's calendar as "Altvina Engagement" blocks
+    let exchangeToIcloud: { skipped: true } | { skipped?: false; createdOrUpdated: number; deleted: number };
+    if (!env.msSourceCalendarName || !env.icloudJayCalendarName) {
+      console.log("Exchange → iCloud sync skipped (missing MS_SOURCE_CALENDAR_NAME or ICLOUD_JAY_CALENDAR_NAME)");
+      exchangeToIcloud = { skipped: true };
+    } else {
+      const sourceCalendar = await findTargetCalendar(
+        accessToken,
+        env.msUserId,
+        env.msSourceCalendarName
+      );
+      const exchangeEventsRaw = await listEventsInWindow(
+        accessToken,
+        env.msUserId,
+        sourceCalendar.id,
+        window.start,
+        window.end
+      );
+      const busyEvents = exchangeEventsRaw.filter(e => e.showAs !== "free");
+      console.log(`Exchange → iCloud: ${busyEvents.length} busy event(s) from "${env.msSourceCalendarName}" (${exchangeEventsRaw.length - busyEvents.length} free excluded)`);
+
+      const jayCalendars = await discoverCalendars(
+        env.icloudUsername,
+        env.icloudPassword,
+        [env.icloudJayCalendarName]
+      );
+      if (jayCalendars.length === 0) {
+        console.warn(`Exchange → iCloud: calendar "${env.icloudJayCalendarName}" not found, skipping`);
+        exchangeToIcloud = { skipped: true };
+      } else {
+        const jayCalendarUrl = jayCalendars[0].url;
+        const baseUrl = jayCalendarUrl.replace(/\/$/, "");
+        let createdOrUpdated = 0;
+        for (const e of busyEvents) {
+          try {
+            const start = new Date(e.start.dateTime);
+            const end = new Date(e.end.dateTime);
+            const isAllDay = e.isAllDay ?? false;
+            await createOrUpdateIcloudEvent(
+              env.icloudUsername,
+              env.icloudPassword,
+              jayCalendarUrl,
+              e.id,
+              start,
+              end,
+              isAllDay,
+              env.timezone
+            );
+            createdOrUpdated++;
+          } catch (err) {
+            console.error(`Exchange → iCloud: failed to sync event "${e.subject}" (${e.id}):`, err);
+          }
+        }
+        const currentBusyIds = new Set(busyEvents.map(e => e.id));
+        const jayEvents = await fetchEvents(
+          env.icloudUsername,
+          env.icloudPassword,
+          jayCalendarUrl,
+          env.icloudJayCalendarName,
+          window.start,
+          window.end
+        );
+        const toDelete = jayEvents.filter(ev => ev.uid.startsWith(ALTVINA_EXCHANGE_UID_PREFIX) && !currentBusyIds.has(ev.uid.replace(ALTVINA_EXCHANGE_UID_PREFIX, "")));
+        let deleted = 0;
+        for (const ev of toDelete) {
+          const exchangeId = ev.uid.replace(ALTVINA_EXCHANGE_UID_PREFIX, "");
+          const eventUrl = `${baseUrl}/${ev.uid}.ics`;
+          try {
+            await deleteIcloudEventByUrl(env.icloudUsername, env.icloudPassword, eventUrl);
+            deleted++;
+          } catch (err) {
+            console.error(`Exchange → iCloud: failed to delete orphan "${ev.uid}":`, err);
+          }
+        }
+        console.log(`Exchange → iCloud: ${createdOrUpdated} created/updated, ${deleted} deleted`);
+        exchangeToIcloud = { createdOrUpdated, deleted };
+      }
+    }
+
     const duration = Date.now() - startTime;
 
     const result = {
@@ -278,6 +370,7 @@ export default async function handler(
         start: window.start.toISOString(),
         end: window.end.toISOString(),
       },
+      exchangeToIcloud,
     };
 
     console.log("Sync completed successfully:", result);

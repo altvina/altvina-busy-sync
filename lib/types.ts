@@ -56,6 +56,7 @@ export interface GraphEventResponse {
   subject: string;
   iCalUId?: string; // iCalendar UID, used to match events
   showAs?: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown"; // Preserve manual status changes
+  isAllDay?: boolean;
   start: {
     dateTime: string;
     timeZone: string;

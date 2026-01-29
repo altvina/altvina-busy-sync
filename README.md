@@ -8,8 +8,8 @@ This application:
 - Connects to iCloud via CalDAV
 - Reads events from two personal iCloud calendars (by name)
 - Optionally reads events from a third public calendar (by URL)
-- Deletes all events in the target Exchange calendar within the sync window
-- Recreates all events as Busy blocks with full titles and descriptions
+- Syncs those events to an Exchange "Personal Busy Sync" calendar (Busy blocks with full titles and descriptions)
+- Optionally syncs the reverse: reads busy/tentative/OOF events from an Exchange calendar and writes them to a designated iCloud calendar as opaque "Altvina Engagement" blocks (no details) so you are not double-booked
 - Ensures Calendly can accurately evaluate availability
 
 ## Features
@@ -39,6 +39,8 @@ Configure these environment variables in your Vercel project settings:
 - `MS_CLIENT_SECRET` - Azure AD application client secret
 - `MS_USER_ID` - Exchange user email (e.g., `jay@altvina.com`)
 - `MS_TARGET_CALENDAR_NAME` - Name of the target Exchange calendar (e.g., `"Personal Busy (iCloud Sync)"`)
+- `MS_SOURCE_CALENDAR_NAME` - (Optional) Exchange calendar to read work appointments from for the reverse sync (e.g., `"Calendar"` or `"Altvina"`). If set, must be used together with `ICLOUD_JAY_CALENDAR_NAME`.
+- `ICLOUD_JAY_CALENDAR_NAME` - (Optional) iCloud calendar to write "Altvina Engagement" busy blocks to (e.g., `"Jay's Calendar"` or `"Jay - Personal"`). If set, must be used together with `MS_SOURCE_CALENDAR_NAME`.
 
 ### Sync Configuration
 
@@ -78,7 +80,21 @@ webcal://p101-caldav.icloud.com/published/2/[UNIQUE_ID]
 
 Public calendars are read-only and don't require authentication. Events from this calendar will be synced along with your CalDAV calendars.
 
-### 3. Microsoft Graph API Setup
+### 3. Exchange → iCloud (Altvina Engagement blocks) (Optional)
+
+If you want work appointments on your Exchange calendar to block time on your personal iCloud calendar (so others see you as unavailable and you avoid double-booking):
+
+1. Set `MS_SOURCE_CALENDAR_NAME` to the exact name of the Exchange calendar that holds your work appointments (e.g. your default `"Calendar"` or a named calendar).
+2. Set `ICLOUD_JAY_CALENDAR_NAME` to the exact name of the iCloud calendar where you want busy blocks to appear (e.g. `"Jay's Calendar"` or `"Jay - Personal"`).
+3. Each sync run will:
+   - Read all events in the sync window from the Exchange source calendar.
+   - Include only events where **Show As** is not **Free** (Busy, Tentative, Out of Office, etc.).
+   - Create or update events on the iCloud calendar with the title **"Altvina Engagement"** (no other details) and mark them as busy.
+   - Remove any "Altvina Engagement" blocks on iCloud when the corresponding Exchange event is deleted or marked **Free**.
+
+Events marked **Free** on Exchange are never synced to iCloud.
+
+### 4. Microsoft Graph API Setup
 
 #### Create Azure AD Application
 
@@ -114,7 +130,7 @@ Public calendars are read-only and don't require authentication. Events from thi
 2. Create a new calendar named exactly as specified in `MS_TARGET_CALENDAR_NAME`
 3. Ensure the calendar is accessible via Microsoft Graph API
 
-### 4. Vercel Configuration
+### 5. Vercel Configuration
 
 #### Deploy the Project
 
@@ -171,6 +187,8 @@ This runs the sync every 15 minutes. The cron job is automatically enabled when 
    MS_CLIENT_SECRET=your-client-secret
    MS_USER_ID=your-user@domain.com
    MS_TARGET_CALENDAR_NAME=Personal Busy (iCloud Sync)
+   MS_SOURCE_CALENDAR_NAME=Calendar
+   ICLOUD_JAY_CALENDAR_NAME=Jay - Personal
    SYNC_LOOKBACK_DAYS=1
    SYNC_LOOKAHEAD_DAYS=90
    TIMEZONE=America/Los_Angeles
@@ -210,6 +228,11 @@ npm run type-check
    - `showAs: "busy"`
    - `sensitivity: "private"`
    - Original iCloud UID appended to description
+7. **Exchange → iCloud (optional)**: If `MS_SOURCE_CALENDAR_NAME` and `ICLOUD_JAY_CALENDAR_NAME` are set:
+   - Reads events from the Exchange source calendar in the sync window
+   - Filters to events where `showAs !== "free"`
+   - Creates or updates events on the iCloud Jay calendar as "Altvina Engagement" (busy, no details)
+   - Deletes "Altvina Engagement" blocks on iCloud when the corresponding Exchange event is gone or marked Free
 
 ### Event Properties
 

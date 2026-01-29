@@ -662,4 +662,146 @@ export async function fetchPublicCalendarEvents(
   }
 }
 
+/** UID prefix for events we create on iCloud from Exchange */
+export const ALTVINA_EXCHANGE_UID_PREFIX = "altvina-exchange-";
+
+/**
+ * Build minimal iCalendar (ICS) string for an "Altvina Engagement" busy block
+ */
+function buildAltvinaEngagementIcs(
+  uid: string,
+  start: Date,
+  end: Date,
+  isAllDay: boolean,
+  timezone: string
+): string {
+  const crlf = "\r\n";
+  const formatUtc = (d: Date): string => {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const h = String(d.getUTCHours()).padStart(2, "0");
+    const min = String(d.getUTCMinutes()).padStart(2, "0");
+    const s = String(d.getUTCSeconds()).padStart(2, "0");
+    return `${y}${m}${day}T${h}${min}${s}Z`;
+  };
+  const formatLocal = (d: Date): string => {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)!.value;
+    return `${get("year")}${get("month")}${get("day")}T${get("hour")}${get("minute")}${get("second")}`;
+  };
+  const formatDateOnly = (d: Date): string => {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const parts = formatter.formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)!.value;
+    return `${get("year")}${get("month")}${get("day")}`;
+  };
+
+  const dtstamp = formatUtc(new Date());
+  let dtstart: string;
+  let dtend: string;
+  if (isAllDay) {
+    const startStr = formatDateOnly(start);
+    let endStr = formatDateOnly(end);
+    if (endStr <= startStr) {
+      const endPlusOne = new Date(start);
+      endPlusOne.setUTCDate(endPlusOne.getUTCDate() + 1);
+      endStr = formatDateOnly(endPlusOne);
+    }
+    dtstart = `DTSTART;VALUE=DATE:${startStr}`;
+    dtend = `DTEND;VALUE=DATE:${endStr}`;
+  } else {
+    dtstart = `DTSTART;TZID=${timezone}:${formatLocal(start)}`;
+    dtend = `DTEND;TZID=${timezone}:${formatLocal(end)}`;
+  }
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Altvina Busy Sync//EN",
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${dtstamp}`,
+    dtstart,
+    dtend,
+    "SUMMARY:Altvina Engagement",
+    "TRANSP:OPAQUE",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+  return lines.join(crlf) + crlf;
+}
+
+/**
+ * Create or update an event on an iCloud calendar via CalDAV PUT
+ */
+export async function createOrUpdateIcloudEvent(
+  username: string,
+  password: string,
+  calendarUrl: string,
+  exchangeEventId: string,
+  start: Date,
+  end: Date,
+  isAllDay: boolean,
+  timezone: string
+): Promise<void> {
+  const uid = `${ALTVINA_EXCHANGE_UID_PREFIX}${exchangeEventId}`;
+  const ics = buildAltvinaEngagementIcs(uid, start, end, isAllDay, timezone);
+  const baseUrl = calendarUrl.replace(/\/$/, "");
+  const eventUrl = `${baseUrl}/${uid}.ics`;
+
+  const response = await fetch(eventUrl, {
+    method: "PUT",
+    headers: {
+      Authorization: getAuthHeader(username, password),
+      "Content-Type": "text/calendar; charset=utf-8",
+      "User-Agent": "AltvinaBusySync/1.0",
+    },
+    body: ics,
+  });
+
+  if (response.ok || response.status === 201 || response.status === 204) {
+    return;
+  }
+  const text = await response.text();
+  throw new Error(`Failed to create/update iCloud event: ${response.status} ${response.statusText} - ${text}`);
+}
+
+/**
+ * Delete an event from an iCloud calendar via CalDAV DELETE
+ */
+export async function deleteIcloudEventByUrl(
+  username: string,
+  password: string,
+  eventUrl: string
+): Promise<void> {
+  const response = await fetch(eventUrl, {
+    method: "DELETE",
+    headers: {
+      Authorization: getAuthHeader(username, password),
+      "User-Agent": "AltvinaBusySync/1.0",
+    },
+  });
+  if (response.ok || response.status === 404) {
+    return;
+  }
+  const text = await response.text();
+  throw new Error(`Failed to delete iCloud event: ${response.status} ${response.statusText} - ${text}`);
+}
+
 
