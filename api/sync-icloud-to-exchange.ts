@@ -47,6 +47,8 @@ function calculateSyncWindow(
 /**
  * Validate required environment variables
  */
+const ALTVINA_BLOCK_UID_PREFIX = "altvina-";
+
 function validateEnvVars(): {
   icloudUsername: string;
   icloudPassword: string;
@@ -58,6 +60,7 @@ function validateEnvVars(): {
   msClientSecret: string;
   msUserId: string;
   msTargetCalendarName: string;
+  msSourceCalendarName?: string; // Optional: Exchange calendar to read work appointments → write busy blocks to iCloud
   syncLookbackDays: number;
   syncLookaheadDays: number;
   timezone: string;
@@ -73,14 +76,18 @@ function validateEnvVars(): {
     MS_CLIENT_SECRET: process.env.MS_CLIENT_SECRET,
     MS_USER_ID: process.env.MS_USER_ID,
     MS_TARGET_CALENDAR_NAME: process.env.MS_TARGET_CALENDAR_NAME,
+    MS_SOURCE_CALENDAR_NAME: process.env.MS_SOURCE_CALENDAR_NAME, // Optional
     SYNC_LOOKBACK_DAYS: process.env.SYNC_LOOKBACK_DAYS,
     SYNC_LOOKAHEAD_DAYS: process.env.SYNC_LOOKAHEAD_DAYS,
     TIMEZONE: process.env.TIMEZONE,
   };
 
-  // ICLOUD_CAL3 is optional
+  const trimEnvVar = (value: string): string => value.trim().replace(/^["']|["']$/g, "");
+  const optional = (v: string | undefined) => (v ? trimEnvVar(v) : undefined);
+
+  // ICLOUD_CAL3 and MS_SOURCE_CALENDAR_NAME are optional
   const missing = Object.entries(requiredVars)
-    .filter(([key, value]) => !value && key !== 'ICLOUD_CAL3')
+    .filter(([key, value]) => !value && key !== "ICLOUD_CAL3" && key !== "MS_SOURCE_CALENDAR_NAME")
     .map(([key]) => key);
 
   if (missing.length > 0) {
@@ -96,22 +103,18 @@ function validateEnvVars(): {
     );
   }
 
-  // Helper to trim quotes and whitespace from env vars
-  const trimEnvVar = (value: string): string => {
-    return value.trim().replace(/^["']|["']$/g, '');
-  };
-
   return {
     icloudUsername: trimEnvVar(requiredVars.ICLOUD_USERNAME!),
     icloudPassword: trimEnvVar(requiredVars.ICLOUD_APP_PASSWORD!),
     icloudCal1: trimEnvVar(requiredVars.ICLOUD_CAL1!),
     icloudCal2: trimEnvVar(requiredVars.ICLOUD_CAL2!),
-    icloudCal3: requiredVars.ICLOUD_CAL3 ? trimEnvVar(requiredVars.ICLOUD_CAL3) : undefined,
+    icloudCal3: optional(requiredVars.ICLOUD_CAL3),
     msTenantId: trimEnvVar(requiredVars.MS_TENANT_ID!),
     msClientId: trimEnvVar(requiredVars.MS_CLIENT_ID!),
     msClientSecret: trimEnvVar(requiredVars.MS_CLIENT_SECRET!),
     msUserId: trimEnvVar(requiredVars.MS_USER_ID!),
     msTargetCalendarName: trimEnvVar(requiredVars.MS_TARGET_CALENDAR_NAME!),
+    msSourceCalendarName: optional(requiredVars.MS_SOURCE_CALENDAR_NAME),
     syncLookbackDays: lookbackDays,
     syncLookaheadDays: lookaheadDays,
     timezone: trimEnvVar(requiredVars.TIMEZONE!),
@@ -378,6 +381,72 @@ export default async function handler(
       }
     }
 
+    // Step 5b: Exchange (Altvina) → iCloud: write busy blocks to Jay's Calendar so personal calendar shows work appointments
+    let exchangeToIcloudCreated = 0;
+    let exchangeToIcloudUpdated = 0;
+    let exchangeToIcloudDeleted = 0;
+    if (env.msSourceCalendarName && cal2Url) {
+      try {
+        const sourceCalendar = await findTargetCalendar(
+          accessToken,
+          env.msUserId,
+          env.msSourceCalendarName
+        );
+        const sourceEvents = await listEventsInWindow(
+          accessToken,
+          env.msUserId,
+          sourceCalendar.id,
+          window.start,
+          window.end
+        );
+        const busyEvents = sourceEvents.filter((e) => e.showAs && e.showAs !== "free");
+        const busyIds = new Set(busyEvents.map((e) => e.id));
+        const altvinaUidToEvent = new Map<string, (typeof iCloudEvents)[0]>();
+        for (const ev of iCloudEvents) {
+          if (ev.uid.startsWith(ALTVINA_BLOCK_UID_PREFIX) && normalizeCalName(ev.calendarName) === normalizeCalName(env.icloudCal2) && ev.eventUrl) {
+            altvinaUidToEvent.set(ev.uid, ev);
+          }
+        }
+        for (const e of busyEvents) {
+          const uid = ALTVINA_BLOCK_UID_PREFIX + e.id;
+          const start = new Date(e.start.dateTime);
+          const end = new Date(e.end.dateTime);
+          const normalized = {
+            uid,
+            title: "Altvina Engagement",
+            description: "",
+            start,
+            end,
+            calendarName: env.icloudCal2,
+            isAllDay: e.isAllDay ?? false,
+          };
+          const existing = altvinaUidToEvent.get(uid);
+          if (existing?.eventUrl) {
+            const same = existing.start.getTime() === start.getTime() && existing.end.getTime() === end.getTime();
+            if (!same) {
+              await updateIcloudEvent(env.icloudUsername, env.icloudPassword, existing.eventUrl, normalized);
+              exchangeToIcloudUpdated++;
+            }
+          } else {
+            await createIcloudEvent(env.icloudUsername, env.icloudPassword, cal2Url, normalized);
+            exchangeToIcloudCreated++;
+          }
+        }
+        for (const [uid, ev] of altvinaUidToEvent) {
+          const exchangeId = uid.slice(ALTVINA_BLOCK_UID_PREFIX.length);
+          if (!busyIds.has(exchangeId)) {
+            await deleteIcloudEventByUrl(env.icloudUsername, env.icloudPassword, ev.eventUrl!);
+            exchangeToIcloudDeleted++;
+          }
+        }
+        if (exchangeToIcloudCreated || exchangeToIcloudUpdated || exchangeToIcloudDeleted) {
+          console.log(`Exchange→iCloud: ${exchangeToIcloudCreated} created, ${exchangeToIcloudUpdated} updated, ${exchangeToIcloudDeleted} deleted (busy blocks on ${env.icloudCal2})`);
+        }
+      } catch (err) {
+        console.error("Exchange→iCloud (Altvina busy blocks):", err);
+      }
+    }
+
     // Step 6: iCloud → Outlook sync (with SyncSource in body)
     const syncOptions = {
       cal1Name: env.icloudCal1,
@@ -474,8 +543,13 @@ export default async function handler(
         skippedNoCal2Url: outlookToIcloud.skippedNoCal2Url,
         candidates: outlookToIcloud.candidates,
         errors: outlookToIcloud.errors.length > 0 ? outlookToIcloud.errors : undefined,
-        /** When CAL2 URL not found: set ICLOUD_CAL2 in Vercel to one of these exact strings (copy/paste) */
         setIcloudCal2ToExactlyOneOf,
+      },
+      /** When MS_SOURCE_CALENDAR_NAME is set: busy blocks on Altvina calendar written to iCloud (Jay's Calendar) */
+      exchangeToIcloud: {
+        created: exchangeToIcloudCreated,
+        updated: exchangeToIcloudUpdated,
+        deleted: exchangeToIcloudDeleted,
       },
       window: {
         start: window.start.toISOString(),
