@@ -255,8 +255,15 @@ export default async function handler(
       }
     }
 
+    // CAL2 UIDs we consider "synced to Outlook" — exclude Altvina blocks (they are iCloud-only for availability)
     const cal2UidsFromIcloud = new Set(
-      iCloudEvents.filter((e) => normalizeCalName(e.calendarName) === normalizeCalName(env.icloudCal2)).map((e) => e.uid)
+      iCloudEvents
+        .filter(
+          (e) =>
+            normalizeCalName(e.calendarName) === normalizeCalName(env.icloudCal2) &&
+            !e.uid.startsWith(ALTVINA_BLOCK_UID_PREFIX)
+        )
+        .map((e) => e.uid)
     );
 
     const outlookToIcloud = {
@@ -362,6 +369,8 @@ export default async function handler(
     for (const ev of iCloudEvents) {
       if (ev.calendarName !== env.icloudCal1 && ev.calendarName !== env.icloudCal2) continue;
       if (!ev.eventUrl) continue;
+      // Altvina busy blocks (uid starts with altvina-) are managed by Exchange→iCloud only; never delete based on Outlook
+      if (ev.uid.startsWith(ALTVINA_BLOCK_UID_PREFIX)) continue;
       const tag = ev.calendarName === env.icloudCal1 ? "CAL1" : "CAL2";
       const key = `${tag}\0${ev.uid}`;
       if (!outlookKeys.has(key)) {
@@ -447,17 +456,18 @@ export default async function handler(
       }
     }
 
-    // Step 6: iCloud → Outlook sync (with SyncSource in body)
+    // Step 6: iCloud → Outlook sync (with SyncSource in body). Exclude Altvina blocks so they stay iCloud-only.
+    const iCloudEventsForOutlook = iCloudEvents.filter((e) => !e.uid.startsWith(ALTVINA_BLOCK_UID_PREFIX));
     const syncOptions = {
       cal1Name: env.icloudCal1,
       cal2Name: env.icloudCal2,
     };
-    console.log(`Syncing ${iCloudEvents.length} events from iCloud...`);
+    console.log(`Syncing ${iCloudEventsForOutlook.length} events from iCloud (excluding ${iCloudEvents.length - iCloudEventsForOutlook.length} Altvina blocks)...`);
     const syncResult = await syncEvents(
       accessToken,
       env.msUserId,
       targetCalendar.id,
-      iCloudEvents,
+      iCloudEventsForOutlook,
       env.timezone,
       window,
       syncOptions
