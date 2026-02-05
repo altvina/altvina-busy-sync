@@ -7,6 +7,38 @@ import type { NormalizedEvent, ICloudCalendar } from "./types.js";
 
 const ICLOUD_BASE_URL = "https://caldav.icloud.com";
 
+/** Decode XML entities in calendar display names (e.g. Jay&apos;s Calendar → Jay's Calendar) */
+function decodeXmlInDisplayName(s: string): string {
+  return s
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+/**
+ * Strip X-APPLE-STRUCTURED-LOCATION (and similar) lines that can cause ical.js parse errors
+ * (e.g. "Missing parameter value" when Apple uses :: or complex values).
+ */
+function sanitizeIcalForParse(icalText: string): string {
+  const lines = icalText.split(/\r?\n/);
+  const out: string[] = [];
+  let skipUntilNewLine = false;
+  for (const line of lines) {
+    if (skipUntilNewLine) {
+      if (!/^[ \t]/.test(line)) skipUntilNewLine = false;
+      else continue;
+    }
+    if (/^X-APPLE-STRUCTURED-LOCATION/i.test(line)) {
+      skipUntilNewLine = true;
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\r\n");
+}
+
 /**
  * Get Basic Auth header for iCloud CalDAV requests
  */
@@ -138,7 +170,7 @@ export async function discoverAllCalendars(
   );
   for (const match of calendarMatches) {
     let url = match[1];
-    const name = match[2];
+    const name = decodeXmlInDisplayName(match[2]);
     if (!url.startsWith("http")) url = `${ICLOUD_BASE_URL}${url}`;
     const isPrincipal = url.endsWith("/calendars/") && !url.match(/\/calendars\/[^/]+\/$/);
     if (isPrincipal) continue;
@@ -204,7 +236,7 @@ export async function discoverCalendars(
     
     for (const match of calendarMatches) {
       let url = match[1];
-      const name = match[2];
+      const name = decodeXmlInDisplayName(match[2]);
       
       // Convert relative URL to absolute URL if needed
       if (!url.startsWith('http')) {
@@ -409,6 +441,7 @@ export async function fetchEvents(
           }
         }
         
+        icalText = sanitizeIcalForParse(icalText);
         const jcalData = ICAL.parse(icalText);
         const comp = new ICAL.Component(jcalData);
 
@@ -761,10 +794,10 @@ export async function fetchPublicCalendarEvents(
       );
     }
     
-    const icalText = await response.text();
+    let icalText = await response.text();
     console.log(`Fetched public calendar .ics file (${icalText.length} chars)`);
     
-    // Parse the iCalendar data
+    icalText = sanitizeIcalForParse(icalText);
     const jcalData = ICAL.parse(icalText);
     const comp = new ICAL.Component(jcalData);
     
