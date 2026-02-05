@@ -249,8 +249,8 @@ export default async function handler(
       const meta = parseSyncMeta(outlookEvent.body?.content);
       const { uid: metaUid, syncSource } = meta;
 
-      if (!syncSource || !metaUid) {
-        // Created in Outlook → create on iCloud CAL2 (Jay's Calendar) and tag Outlook with SyncSource + UID
+      // No SyncSource = event was created manually in Outlook on Personal Busy; default to adding block on Jay's Calendar (CAL2)
+      if (!syncSource) {
         if (!cal2Url) {
           console.warn(`Skipping Outlook-created event "${outlookEvent.subject}" (no CAL2 URL)`);
           continue;
@@ -289,6 +289,7 @@ export default async function handler(
         continue;
       }
 
+      if (!metaUid) continue; // need UID for update/delete from iCloud
       if (syncSource === "CAL3") continue; // Public calendar read-only
 
       const calName = syncSource === "CAL1" ? env.icloudCal1 : env.icloudCal2;
