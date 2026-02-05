@@ -165,19 +165,21 @@ export default async function handler(
     if (env.icloudCal3) {
       console.log(`Fetching events from public calendar URL: ${env.icloudCal3}`);
       const { fetchPublicCalendarEvents } = await import("../lib/icloud.js");
-      const publicEvents = await fetchPublicCalendarEvents(
+      const publicEventsRaw = await fetchPublicCalendarEvents(
         env.icloudCal3,
         "Personal Calendar",
         window.start,
         window.end
       );
-      const newFromPublic = publicEvents.filter((e) => !caldavUids.has(e.uid));
-      if (newFromPublic.length < publicEvents.length) {
+      const newFromPublic = publicEventsRaw.filter((e) => !caldavUids.has(e.uid));
+      if (newFromPublic.length < publicEventsRaw.length) {
         console.log(
-          `Skipping ${publicEvents.length - newFromPublic.length} public event(s) already from CalDAV (prefer CAL1/CAL2 over CAL3)`
+          `Skipping ${publicEventsRaw.length - newFromPublic.length} public event(s) already from CalDAV (prefer CAL1/CAL2 over CAL3)`
         );
       }
-      iCloudEvents.push(...newFromPublic);
+      // Treat public calendar as Jay's Calendar (CAL2) so they show SyncSource CAL2, not CAL3
+      const publicAsCal2 = newFromPublic.map((e) => ({ ...e, calendarName: env.icloudCal2 }));
+      iCloudEvents.push(...publicAsCal2);
     }
 
     console.log(`Total events fetched from all sources: ${iCloudEvents.length}`);
