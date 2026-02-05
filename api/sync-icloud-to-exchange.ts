@@ -7,6 +7,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import {
   fetchAllEvents,
   discoverCalendars,
+  discoverAllCalendars,
   createIcloudEvent,
   updateIcloudEvent,
   deleteIcloudEventByUrl,
@@ -229,10 +230,18 @@ export default async function handler(
     const cal2Url = caldavCalendars.find(
       (c) => normalizeCalName(c.name) === normalizeCalName(env.icloudCal2)
     )?.url;
+    let setIcloudCal2ToExactlyOneOf: string[] | undefined;
     if (!cal2Url) {
       console.warn(
-        `CAL2 URL not found; discovered: ${caldavCalendars.map((c) => `"${c.name}"`).join(", ")}. ICLOUD_CAL2="${env.icloudCal2}". Outlook-created events will not write back to iCloud.`
+        `CAL2 URL not found; ICLOUD_CAL2="${env.icloudCal2}". Fetching all iCloud calendar names.`
       );
+      try {
+        const allCals = await discoverAllCalendars(env.icloudUsername, env.icloudPassword);
+        setIcloudCal2ToExactlyOneOf = allCals.map((c) => c.name);
+        console.log(`All iCloud calendar names: ${setIcloudCal2ToExactlyOneOf.map((n) => `"${n}"`).join(", ")}`);
+      } catch (err) {
+        console.error("Failed to discover all calendars:", err);
+      }
     }
 
     const iCloudByCalAndUid = new Map<string, (typeof iCloudEvents)[0]>();
@@ -465,6 +474,8 @@ export default async function handler(
         skippedNoCal2Url: outlookToIcloud.skippedNoCal2Url,
         candidates: outlookToIcloud.candidates,
         errors: outlookToIcloud.errors.length > 0 ? outlookToIcloud.errors : undefined,
+        /** When CAL2 URL not found: set ICLOUD_CAL2 in Vercel to one of these exact strings (copy/paste) */
+        setIcloudCal2ToExactlyOneOf,
       },
       window: {
         start: window.start.toISOString(),
