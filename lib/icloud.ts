@@ -227,6 +227,31 @@ export async function discoverCalendars(
 }
 
 /**
+ * Parse CalDAV REPORT multistatus into { href, icalText } per response (for eventUrl).
+ */
+function parseReportResponses(
+  reportXml: string,
+  calendarBaseUrl: string
+): { href: string; icalText: string }[] {
+  const blocks: { href: string; icalText: string }[] = [];
+  const responseRegex = /<(?:d:)?response[^>]*>([\s\S]*?)<\/(?:d:)?response>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = responseRegex.exec(reportXml)) !== null) {
+    const block = match[1];
+    const hrefMatch = block.match(/<d:href[^>]*>([^<]+)<\/d:href>/i) ?? block.match(/<href[^>]*>([^<]+)<\/href>/i);
+    const dataMatch = block.match(/<c:calendar-data[^>]*>([\s\S]*?)<\/c:calendar-data>/i) ?? block.match(/<calendar-data[^>]*>([\s\S]*?)<\/calendar-data>/i);
+    if (hrefMatch && dataMatch) {
+      let href = hrefMatch[1].trim();
+      if (!href.startsWith("http")) {
+        href = href.startsWith("/") ? `${ICLOUD_BASE_URL}${href}` : `${calendarBaseUrl.replace(/\/?$/, "/")}${href}`;
+      }
+      blocks.push({ href, icalText: dataMatch[1] });
+    }
+  }
+  return blocks;
+}
+
+/**
  * Fetch events from a specific iCloud calendar within a time window
  */
 export async function fetchEvents(
@@ -288,54 +313,15 @@ export async function fetchEvents(
       console.log(`Report XML sample (first 500 chars): ${reportXml.substring(0, 500)}`);
     }
 
-    // Extract calendar-data from XML response
-    // iCloud uses default namespace, so try multiple patterns
-    let matchesArray: RegExpMatchArray[] = [];
-    
-    // Try pattern 1: with c: namespace prefix
-    let calendarDataMatches = reportXml.matchAll(
-      /<c:calendar-data[^>]*>([\s\S]*?)<\/c:calendar-data>/g
-    );
-    matchesArray = Array.from(calendarDataMatches);
-    
-    // If no matches, try pattern 2: without namespace prefix (default namespace)
-    if (matchesArray.length === 0) {
-      console.log("Trying calendar-data pattern without namespace prefix...");
-      calendarDataMatches = reportXml.matchAll(
-        /<calendar-data[^>]*>([\s\S]*?)<\/calendar-data>/g
-      );
-      matchesArray = Array.from(calendarDataMatches);
-    }
-    
-    // Try pattern 3: with xmlns attribute (CDATA might be escaped)
-    if (matchesArray.length === 0) {
-      console.log("Trying calendar-data pattern with xmlns...");
-      calendarDataMatches = reportXml.matchAll(
-        /<calendar-data[^>]*xmlns[^>]*>([\s\S]*?)<\/calendar-data>/g
-      );
-      matchesArray = Array.from(calendarDataMatches);
-    }
-    
-    // Try pattern 4: flexible namespace with any prefix
-    if (matchesArray.length === 0) {
-      console.log("Trying calendar-data pattern with flexible namespace...");
-      calendarDataMatches = reportXml.matchAll(
-        /<[^:>]*:calendar-data[^>]*>([\s\S]*?)<\/[^:>]*:calendar-data>/g
-      );
-      matchesArray = Array.from(calendarDataMatches);
-    }
-    
-    console.log(`Found ${matchesArray.length} calendar-data block(s) in report response`);
-    
-    // If still no matches, log a larger sample to see the actual structure
-    if (matchesArray.length === 0 && reportXml.length > 1000) {
-      console.log(`No calendar-data found. XML sample (chars 500-1500): ${reportXml.substring(500, 1500)}`);
-    }
+    // Parse multistatus into response blocks (each has href + calendar-data) for eventUrl
+    const responseBlocks = parseReportResponses(reportXml, calendarUrl);
+    console.log(`Found ${responseBlocks.length} response block(s) in report`);
 
     const events: NormalizedEvent[] = [];
 
-    for (const match of matchesArray) {
-      let icalText = match[1];
+    for (const block of responseBlocks) {
+      let icalText = block.icalText;
+      const eventUrl = block.href;
       
       // Decode XML entities
       icalText = icalText
@@ -365,41 +351,35 @@ export async function fetchEvents(
         const isAllDay = /DTSTART[^:]*VALUE=DATE/i.test(icalText) || /DTEND[^:]*VALUE=DATE/i.test(icalText);
         
         // Extract timezone and time info from raw iCalendar text
-        // Look for DTSTART with timezone: DTSTART;TZID=America/Los_Angeles:20251205T093000
-        // Or all-day format: DTSTART;VALUE=DATE:20251205
         let dtstartMatch = icalText.match(/DTSTART(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
         let eventTimezone = dtstartMatch ? (dtstartMatch[1] || null) : null;
-        let dtstartValue = dtstartMatch ? dtstartMatch[2] : null; // Format: 20251205T093000
+        let dtstartValue = dtstartMatch ? dtstartMatch[2] : null;
         
-        // If all-day, try to extract date-only format: DTSTART;VALUE=DATE:20251205
         if (isAllDay && !dtstartValue) {
           const dateOnlyMatch = icalText.match(/DTSTART[^:]*:(\d{8})/i);
           if (dateOnlyMatch) {
-            dtstartValue = dateOnlyMatch[1]; // Format: 20251205 (no time)
-            eventTimezone = null; // All-day events don't have timezone
+            dtstartValue = dateOnlyMatch[1];
+            eventTimezone = null;
           }
         }
         
-        // Also extract DTEND for end time
         let dtendMatch = icalText.match(/DTEND(?:;[^:]*TZID=([^:;]+))?:(\d{8}T\d{6})/i);
         let dtendValue = dtendMatch ? dtendMatch[2] : null;
         
-        // If all-day, try to extract date-only format for DTEND
         if (isAllDay && !dtendValue) {
           const dateOnlyMatch = icalText.match(/DTEND[^:]*:(\d{8})/i);
           if (dateOnlyMatch) {
-            dtendValue = dateOnlyMatch[1]; // Format: 20251205 (no time)
+            dtendValue = dateOnlyMatch[1];
           }
         }
         
         const jcalData = ICAL.parse(icalText);
         const comp = new ICAL.Component(jcalData);
 
-        // Get all VEVENT components
         const vevents = comp.getAllSubcomponents("vevent");
 
         for (const vevent of vevents) {
-          const normalized = normalizeEvent(vevent, calendarName, eventTimezone, dtstartValue, dtendValue, isAllDay);
+          const normalized = normalizeEvent(vevent, calendarName, eventTimezone, dtstartValue, dtendValue, isAllDay, eventUrl);
           if (normalized) {
             events.push(normalized);
           }
@@ -426,7 +406,8 @@ function normalizeEvent(
   eventTimezone: string | null,
   dtstartValue: string | null,
   dtendValue: string | null,
-  isAllDay: boolean = false
+  isAllDay: boolean = false,
+  eventUrl?: string
 ): NormalizedEvent | null {
   try {
     const event = new ICAL.Event(vevent);
@@ -530,11 +511,143 @@ function normalizeEvent(
       location,
       calendarName,
       isAllDay,
+      eventUrl,
     };
   } catch (error) {
     console.error("Error normalizing event:", error);
     return null;
   }
+}
+
+/**
+ * Build iCalendar (.ics) string from NormalizedEvent for CalDAV PUT
+ */
+function buildIcsFromEvent(event: NormalizedEvent, uidOverride?: string): string {
+  const uid = uidOverride ?? event.uid;
+  const formatUtc = (d: Date) => {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const h = String(d.getUTCHours()).padStart(2, "0");
+    const min = String(d.getUTCMinutes()).padStart(2, "0");
+    const s = String(d.getUTCSeconds()).padStart(2, "0");
+    return `${y}${m}${day}T${h}${min}${s}Z`;
+  };
+  const now = formatUtc(new Date());
+  const escape = (s: string) => s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+  let dtStart: string;
+  let dtEnd: string;
+  if (event.isAllDay) {
+    const d = (date: Date) => `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, "0")}${String(date.getUTCDate()).padStart(2, "0")}`;
+    dtStart = `DTSTART;VALUE=DATE:${d(event.start)}`;
+    dtEnd = `DTEND;VALUE=DATE:${d(event.end)}`;
+  } else {
+    dtStart = `DTSTART:${formatUtc(event.start)}`;
+    dtEnd = `DTEND:${formatUtc(event.end)}`;
+  }
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Altvina Busy Sync//EN",
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${now}`,
+    dtStart,
+    dtEnd,
+    `SUMMARY:${escape(event.title)}`,
+    "TRANSP:OPAQUE",
+  ];
+  if (event.description) {
+    lines.push(`DESCRIPTION:${escape(event.description)}`);
+  }
+  if (event.location) {
+    lines.push(`LOCATION:${escape(event.location)}`);
+  }
+  lines.push("END:VEVENT", "END:VCALENDAR");
+  return lines.join("\r\n");
+}
+
+/**
+ * Create a new event on an iCloud CalDAV calendar (CAL1/CAL2 only).
+ * Returns the UID used (generated or event.uid).
+ */
+export async function createIcloudEvent(
+  username: string,
+  password: string,
+  calendarUrl: string,
+  event: NormalizedEvent
+): Promise<string> {
+  const uid = event.uid || `${crypto.randomUUID().replace(/-/g, "")}@altvina-sync`;
+  const eventToUse = { ...event, uid };
+  const ical = buildIcsFromEvent(eventToUse);
+  const eventFilename = `${uid.replace(/[^a-zA-Z0-9@._-]/g, "_")}.ics`;
+  const url = calendarUrl.replace(/\/?$/, "/") + eventFilename;
+
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: {
+      Authorization: getAuthHeader(username, password),
+      "Content-Type": 'text/calendar; charset="utf-8"',
+      "If-None-Match": "*",
+    },
+    body: ical,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to create iCloud event: ${response.status} ${response.statusText} - ${text}`);
+  }
+  console.log(`Created iCloud event: ${event.title} (${uid})`);
+  return uid;
+}
+
+/**
+ * Update an existing event on iCloud CalDAV by its event URL.
+ */
+export async function updateIcloudEvent(
+  username: string,
+  password: string,
+  eventUrl: string,
+  event: NormalizedEvent
+): Promise<void> {
+  const ical = buildIcsFromEvent(event);
+
+  const response = await fetch(eventUrl, {
+    method: "PUT",
+    headers: {
+      Authorization: getAuthHeader(username, password),
+      "Content-Type": 'text/calendar; charset="utf-8"',
+    },
+    body: ical,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to update iCloud event: ${response.status} ${response.statusText} - ${text}`);
+  }
+  console.log(`Updated iCloud event: ${event.title} (${event.uid})`);
+}
+
+/**
+ * Delete an event on iCloud CalDAV by its event URL.
+ */
+export async function deleteIcloudEventByUrl(
+  username: string,
+  password: string,
+  eventUrl: string
+): Promise<void> {
+  const response = await fetch(eventUrl, {
+    method: "DELETE",
+    headers: {
+      Authorization: getAuthHeader(username, password),
+    },
+  });
+
+  if (!response.ok && response.status !== 404) {
+    const text = await response.text();
+    throw new Error(`Failed to delete iCloud event: ${response.status} ${response.statusText} - ${text}`);
+  }
+  console.log(`Deleted iCloud event at ${eventUrl}`);
 }
 
 /**

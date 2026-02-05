@@ -7,6 +7,7 @@ import type {
   GraphCalendar,
   GraphEventResponse,
   NormalizedEvent,
+  SyncSourceTag,
 } from "./types.js";
 
 export const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
@@ -140,14 +141,16 @@ export async function findTargetCalendar(
 }
 
 /**
- * List all events in a calendar within a time window (with pagination support)
+ * List all events in a calendar within a time window (with pagination support).
+ * Use includeBody: true for two-way sync (parse body for SyncSource + Synced UID).
  */
 export async function listEventsInWindow(
   accessToken: string,
   userId: string,
   calendarId: string,
   start: Date,
-  end: Date
+  end: Date,
+  options?: { includeBody?: boolean }
 ): Promise<GraphEventResponse[]> {
   const formatDate = (date: Date): string => {
     return date.toISOString();
@@ -157,14 +160,16 @@ export async function listEventsInWindow(
   const endStr = formatDate(end);
   const allEvents: GraphEventResponse[] = [];
   let nextLink: string | null = null;
+  const selectFields = options?.includeBody
+    ? "id,subject,iCalUId,showAs,start,end,isAllDay,body"
+    : "id,subject,iCalUId,showAs,start,end,isAllDay";
 
   do {
     let url: string;
     if (nextLink) {
       url = nextLink;
     } else {
-      // Request iCalUId and showAs fields explicitly to match events by UID and preserve status
-      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100&$select=id,subject,iCalUId,showAs,start,end,isAllDay`;
+      url = `${GRAPH_BASE_URL}/users/${userId}/calendars/${calendarId}/calendarView?startDateTime=${encodeURIComponent(startStr)}&endDateTime=${encodeURIComponent(endStr)}&$top=100&$select=${encodeURIComponent(selectFields)}`;
     }
 
     const response = await fetch(url, {
@@ -275,6 +280,61 @@ export async function deleteEventsInWindow(
 }
 
 /**
+ * Build body content for a synced event (includes Synced UID and optional SyncSource for two-way sync).
+ */
+function buildEventBodyContent(event: NormalizedEvent, syncSource?: SyncSourceTag): string {
+  let content = event.description ? `${event.description}\n\n` : "";
+  content += `Synced UID: ${event.uid}`;
+  if (syncSource) {
+    content += `\nSyncSource: ${syncSource}`;
+  }
+  return content;
+}
+
+/**
+ * Parse SyncSource and Synced UID from Outlook event body (for two-way sync).
+ */
+export function parseSyncMeta(bodyContent: string | undefined): {
+  uid?: string;
+  syncSource?: SyncSourceTag;
+} {
+  if (!bodyContent || typeof bodyContent !== "string") return {};
+  const uidMatch = bodyContent.match(/Synced\s+UID:\s*(\S+)/i);
+  const sourceMatch = bodyContent.match(/SyncSource:\s*(CAL[123])/i);
+  return {
+    uid: uidMatch ? uidMatch[1].trim() : undefined,
+    syncSource: sourceMatch ? (sourceMatch[1].toUpperCase() as SyncSourceTag) : undefined,
+  };
+}
+
+/**
+ * Convert a Graph calendar event to NormalizedEvent (for Outlook→iCloud write-back).
+ */
+export function graphEventToNormalizedEvent(
+  e: GraphEventResponse,
+  overrides: { uid?: string; calendarName?: string } = {}
+): NormalizedEvent {
+  const start = new Date(e.start.dateTime);
+  const end = new Date(e.end.dateTime);
+  let description = "";
+  if (e.body?.content) {
+    description = e.body.content
+      .replace(/\n*Synced\s+UID:.*/i, "")
+      .replace(/\n*SyncSource:.*/i, "")
+      .trim();
+  }
+  return {
+    uid: overrides.uid ?? e.iCalUId ?? "",
+    title: e.subject ?? "Untitled",
+    description,
+    start,
+    end,
+    calendarName: overrides.calendarName ?? "",
+    isAllDay: e.isAllDay,
+  };
+}
+
+/**
  * Create a new event in the Exchange calendar
  * Returns the created event ID
  */
@@ -283,7 +343,8 @@ export async function createEvent(
   userId: string,
   calendarId: string,
   event: NormalizedEvent,
-  timezone: string
+  timezone: string,
+  syncSource?: SyncSourceTag
 ): Promise<string> {
   try {
     // Format date for Graph API
@@ -335,7 +396,7 @@ export async function createEvent(
       subject: event.title,
       body: {
         contentType: "text",
-        content: `${event.description}\n\nSynced UID: ${event.uid}`,
+        content: buildEventBodyContent(event, syncSource),
       },
       start: {
         dateTime: startFormatted,
@@ -419,7 +480,8 @@ export async function updateEvent(
   eventId: string,
   event: NormalizedEvent,
   timezone: string,
-  preserveShowAs?: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown"
+  preserveShowAs?: "free" | "tentative" | "busy" | "oof" | "workingElsewhere" | "unknown",
+  syncSource?: SyncSourceTag
 ): Promise<void> {
   try {
     // Format date for Graph API
@@ -469,7 +531,7 @@ export async function updateEvent(
       subject: event.title,
       body: {
         contentType: "text",
-        content: `${event.description}\n\nSynced UID: ${event.uid}`,
+        content: buildEventBodyContent(event, syncSource),
       },
       start: {
         dateTime: startFormatted,
@@ -538,14 +600,27 @@ export async function updateEvent(
  * Preserves manual showAs="free" status changes
  * Returns counts of created, updated, and skipped events, plus IDs of created/updated events
  */
+/** Options for two-way sync: map calendar names to SyncSource tags. */
+export interface SyncEventsOptions {
+  cal1Name: string;
+  cal2Name: string;
+}
+
 export async function syncEvents(
   accessToken: string,
   userId: string,
   calendarId: string,
   events: NormalizedEvent[],
   timezone: string,
-  window: { start: Date; end: Date }
+  window: { start: Date; end: Date },
+  syncOptions?: SyncEventsOptions
 ): Promise<{ created: number; updated: number; skipped: number; createdEventIds: Set<string> }> {
+  const getSyncSource = (calendarName: string): SyncSourceTag | undefined => {
+    if (!syncOptions) return undefined;
+    if (calendarName === syncOptions.cal1Name) return "CAL1";
+    if (calendarName === syncOptions.cal2Name) return "CAL2";
+    return "CAL3"; // public or other
+  };
   let createdCount = 0;
   let updatedCount = 0;
   let skippedCount = 0;
@@ -639,7 +714,8 @@ export async function syncEvents(
           existingEvent.id,
           event,
           timezone,
-          preserveShowAs
+          preserveShowAs,
+          getSyncSource(event.calendarName)
         );
         updatedCount++;
         // Track this event so we don't delete it
@@ -655,7 +731,14 @@ export async function syncEvents(
       // Event doesn't exist - create it
       try {
         console.log(`Creating new event: "${event.title}" (UID: ${event.uid})`);
-        const createdEventId = await createEvent(accessToken, userId, calendarId, event, timezone);
+        const createdEventId = await createEvent(
+          accessToken,
+          userId,
+          calendarId,
+          event,
+          timezone,
+          getSyncSource(event.calendarName)
+        );
         createdCount++;
         if (createdEventId) {
           createdEventIds.add(createdEventId);

@@ -4,12 +4,21 @@
  */
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { fetchAllEvents } from "../lib/icloud.js";
+import {
+  fetchAllEvents,
+  discoverCalendars,
+  createIcloudEvent,
+  updateIcloudEvent,
+  deleteIcloudEventByUrl,
+} from "../lib/icloud.js";
 import {
   getAccessToken,
   findTargetCalendar,
   syncEvents,
   listEventsInWindow,
+  updateEvent,
+  parseSyncMeta,
+  graphEventToNormalizedEvent,
   GRAPH_BASE_URL,
 } from "../lib/graph.js";
 import type { SyncWindow } from "../lib/types.js";
@@ -184,8 +193,138 @@ export default async function handler(
     );
     console.log(`Found target calendar: ${targetCalendar.id}`);
 
-    // Step 4: Sync events using update-or-create pattern
-    // This preserves manual showAs="free" status changes
+    // Step 4: Fetch Outlook events with body (for two-way sync: parse SyncSource + UID)
+    const existingEventsInWindow = await listEventsInWindow(
+      accessToken,
+      env.msUserId,
+      targetCalendar.id,
+      window.start,
+      window.end,
+      { includeBody: true }
+    );
+
+    // Step 5: Outlook → iCloud write-back (create new on CAL2, update/delete by origin)
+    const caldavCalendars = await discoverCalendars(
+      env.icloudUsername,
+      env.icloudPassword,
+      [env.icloudCal1, env.icloudCal2]
+    );
+    const cal1Url = caldavCalendars.find((c) => c.name === env.icloudCal1)?.url;
+    const cal2Url = caldavCalendars.find((c) => c.name === env.icloudCal2)?.url;
+
+    const iCloudByCalAndUid = new Map<string, (typeof iCloudEvents)[0]>();
+    for (const ev of iCloudEvents) {
+      if (ev.calendarName === env.icloudCal1 || ev.calendarName === env.icloudCal2) {
+        iCloudByCalAndUid.set(`${ev.calendarName}\0${ev.uid}`, ev);
+      }
+    }
+
+    const cal2UidsFromIcloud = new Set(
+      iCloudEvents.filter((e) => e.calendarName === env.icloudCal2).map((e) => e.uid)
+    );
+
+    for (const outlookEvent of existingEventsInWindow) {
+      const meta = parseSyncMeta(outlookEvent.body?.content);
+      const { uid: metaUid, syncSource } = meta;
+
+      if (!syncSource || !metaUid) {
+        // Created in Outlook → create on iCloud CAL2 (Jay's Calendar) and tag Outlook with SyncSource + UID
+        if (!cal2Url) continue;
+        try {
+          const normalized = graphEventToNormalizedEvent(outlookEvent, {
+            uid: "",
+            calendarName: env.icloudCal2,
+          });
+          const newUid = await createIcloudEvent(
+            env.icloudUsername,
+            env.icloudPassword,
+            cal2Url,
+            { ...normalized, uid: normalized.uid || "" }
+          );
+          cal2UidsFromIcloud.add(newUid);
+          const toUpdate = graphEventToNormalizedEvent(outlookEvent, {
+            uid: newUid,
+            calendarName: env.icloudCal2,
+          });
+          await updateEvent(
+            accessToken,
+            env.msUserId,
+            targetCalendar.id,
+            outlookEvent.id,
+            toUpdate,
+            env.timezone,
+            outlookEvent.showAs === "free" ? "free" : undefined,
+            "CAL2"
+          );
+          console.log(`Outlook→iCloud: created "${outlookEvent.subject}" on CAL2 and tagged Outlook (${newUid})`);
+        } catch (err) {
+          console.error(`Outlook→iCloud: failed to create "${outlookEvent.subject}" on CAL2:`, err);
+        }
+        continue;
+      }
+
+      if (syncSource === "CAL3") continue; // Public calendar read-only
+
+      const calName = syncSource === "CAL1" ? env.icloudCal1 : env.icloudCal2;
+      const calUrl = syncSource === "CAL1" ? cal1Url : cal2Url;
+      const iCloudEv = iCloudByCalAndUid.get(`${calName}\0${metaUid}`);
+
+      if (iCloudEv?.eventUrl) {
+        const outlookNorm = graphEventToNormalizedEvent(outlookEvent, { calendarName: calName });
+        const same =
+          outlookNorm.title === iCloudEv.title &&
+          outlookNorm.start.getTime() === iCloudEv.start.getTime() &&
+          outlookNorm.end.getTime() === iCloudEv.end.getTime();
+        if (!same) {
+          try {
+            await updateIcloudEvent(
+              env.icloudUsername,
+              env.icloudPassword,
+              iCloudEv.eventUrl,
+              { ...outlookNorm, uid: metaUid }
+            );
+            console.log(`Outlook→iCloud: updated "${outlookEvent.subject}" (${metaUid}) on ${syncSource}`);
+          } catch (err) {
+            console.error(`Outlook→iCloud: failed to update "${outlookEvent.subject}":`, err);
+          }
+        }
+      }
+    }
+
+    // Delete from iCloud when user deleted the event in Outlook (no Outlook event with this SyncSource+UID)
+    const outlookKeys = new Set(
+      existingEventsInWindow
+        .map((e) => {
+          const m = parseSyncMeta(e.body?.content);
+          if (m.syncSource && m.uid) return `${m.syncSource}\0${m.uid}`;
+          return null;
+        })
+        .filter((k): k is string => k !== null)
+    );
+    for (const ev of iCloudEvents) {
+      if (ev.calendarName !== env.icloudCal1 && ev.calendarName !== env.icloudCal2) continue;
+      if (!ev.eventUrl) continue;
+      const tag = ev.calendarName === env.icloudCal1 ? "CAL1" : "CAL2";
+      const key = `${tag}\0${ev.uid}`;
+      if (!outlookKeys.has(key)) {
+        try {
+          await deleteIcloudEventByUrl(
+            env.icloudUsername,
+            env.icloudPassword,
+            ev.eventUrl
+          );
+          console.log(`Outlook→iCloud: deleted "${ev.title}" (${ev.uid}) from ${tag}`);
+        } catch (err) {
+          console.error(`Outlook→iCloud: failed to delete "${ev.title}":`, err);
+        }
+      }
+    }
+
+    // Step 6: iCloud → Outlook sync (with SyncSource in body)
+    const syncOptions = {
+      cal1Name: env.icloudCal1,
+      cal2Name: env.icloudCal2,
+    };
     console.log(`Syncing ${iCloudEvents.length} events from iCloud...`);
     const syncResult = await syncEvents(
       accessToken,
@@ -193,45 +332,30 @@ export default async function handler(
       targetCalendar.id,
       iCloudEvents,
       env.timezone,
-      window
+      window,
+      syncOptions
     );
     console.log(`Sync complete: ${syncResult.created} created, ${syncResult.updated} updated, ${syncResult.skipped} skipped`);
 
-    // Step 5: Delete orphaned events (exist in Exchange but not in iCloud)
-    // Only delete orphaned events within the sync window (not old events outside window)
-    // IMPORTANT: Only delete events that have iCalUId set (synced events), not manually created ones
-    console.log("Checking for orphaned events to delete (within sync window only)...");
-    const existingEventsInWindow = await listEventsInWindow(
-      accessToken,
-      env.msUserId,
-      targetCalendar.id,
-      window.start,
-      window.end
+    // Step 7: Orphan delete (Outlook events whose SyncSource+UID no longer exists on iCloud)
+    const cal1Uids = new Set(iCloudEvents.filter((e) => e.calendarName === env.icloudCal1).map((e) => e.uid));
+    const cal3Uids = new Set(
+      iCloudEvents.filter((e) => e.calendarName !== env.icloudCal1 && e.calendarName !== env.icloudCal2).map((e) => e.uid)
     );
-    
-    const iCloudUids = new Set(iCloudEvents.map(e => e.uid));
-    
-    // Only consider events with iCalUId as potential orphans (these are synced events)
-    // Events without iCalUId might be manually created and should be preserved
-    // Also exclude events we just created/updated in this sync
-    const orphanedEvents = existingEventsInWindow.filter(e => {
-      // Don't delete events we just created/updated
-      if (syncResult.createdEventIds.has(e.id)) {
-        return false;
-      }
-      if (!e.iCalUId) {
-        // Event has no iCalUId - might be manually created, don't delete
-        return false;
-      }
-      // Event has iCalUId but doesn't match any iCloud event - it's an orphan
-      return !iCloudUids.has(e.iCalUId);
+
+    const orphanedEvents = existingEventsInWindow.filter((e) => {
+      if (syncResult.createdEventIds.has(e.id)) return false;
+      const m = parseSyncMeta(e.body?.content);
+      if (!m.syncSource || !m.uid) return false;
+      if (m.syncSource === "CAL1" && !cal1Uids.has(m.uid)) return true;
+      if (m.syncSource === "CAL2" && !cal2UidsFromIcloud.has(m.uid)) return true;
+      if (m.syncSource === "CAL3" && !cal3Uids.has(m.uid)) return true;
+      return false;
     });
-    
+
     let deletedCount = 0;
     if (orphanedEvents.length > 0) {
-      console.log(`Found ${orphanedEvents.length} orphaned event(s) to delete (events with iCalUId that don't match iCloud)`);
-      console.log(`Orphaned events: ${orphanedEvents.map(e => `"${e.subject}" (${e.iCalUId})`).join(", ")}`);
-      
+      console.log(`Found ${orphanedEvents.length} orphaned event(s) to delete`);
       for (const event of orphanedEvents) {
         try {
           const deleteUrl = `${GRAPH_BASE_URL}/users/${env.msUserId}/calendars/${targetCalendar.id}/events/${event.id}`;
@@ -254,12 +378,6 @@ export default async function handler(
       console.log(`Deleted ${deletedCount} orphaned event(s)`);
     } else {
       console.log("No orphaned events found");
-    }
-    
-    // Log events without iCalUId that were preserved
-    const eventsWithoutUid = existingEventsInWindow.filter(e => !e.iCalUId);
-    if (eventsWithoutUid.length > 0) {
-      console.log(`Preserved ${eventsWithoutUid.length} event(s) without iCalUId (likely manually created): ${eventsWithoutUid.map(e => `"${e.subject}"`).join(", ")}`);
     }
 
     const duration = Date.now() - startTime;

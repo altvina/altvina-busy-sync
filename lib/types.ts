@@ -2,6 +2,9 @@
  * Shared TypeScript interfaces and types for iCloud to Exchange calendar sync
  */
 
+/** Sync source tag stored in Outlook body for two-way sync (CAL3 = read-only public). */
+export type SyncSourceTag = "CAL1" | "CAL2" | "CAL3";
+
 export interface NormalizedEvent {
   uid: string;
   title: string;
@@ -11,6 +14,8 @@ export interface NormalizedEvent {
   location?: string;
   calendarName: string;
   isAllDay?: boolean; // True if event is all-day (VALUE=DATE in iCalendar)
+  /** CalDAV event URL (when from CalDAV fetch) for update/delete write-back */
+  eventUrl?: string;
 }
 
 export interface SyncWindow {
@@ -64,6 +69,11 @@ export interface GraphEventResponse {
   end: {
     dateTime: string;
     timeZone: string;
+  };
+  /** Present when listEventsInWindow called with includeBody: true */
+  body?: {
+    contentType?: string;
+    content?: string;
   };
 }
 
