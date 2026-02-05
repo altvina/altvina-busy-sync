@@ -274,6 +274,7 @@ export default async function handler(
       candidates: 0, // Outlook events with no SyncSource (would create on CAL2)
       errors: [] as string[],
     };
+    const restoredCal1Uids = new Set<string>();
 
     for (const outlookEvent of existingEventsInWindow) {
       const meta = parseSyncMeta(outlookEvent.body?.content);
@@ -353,10 +354,33 @@ export default async function handler(
             console.error(`Outlook→iCloud: failed to update "${outlookEvent.subject}":`, err);
           }
         }
+      } else if (calUrl && !metaUid.startsWith(ALTVINA_BLOCK_UID_PREFIX)) {
+        // Event exists on Outlook (synced before) but missing on iCloud — restore to iCloud (e.g. after wrongful delete)
+        try {
+          const outlookNorm = graphEventToNormalizedEvent(outlookEvent, {
+            uid: metaUid,
+            calendarName: calName,
+          });
+          await createIcloudEvent(
+            env.icloudUsername,
+            env.icloudPassword,
+            calUrl,
+            { ...outlookNorm, uid: metaUid }
+          );
+          if (syncSource === "CAL2") cal2UidsFromIcloud.add(metaUid);
+          if (syncSource === "CAL1") restoredCal1Uids.add(metaUid);
+          outlookToIcloud.created++;
+          console.log(`Outlook→iCloud: restored "${outlookEvent.subject}" (${metaUid}) to ${syncSource}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          outlookToIcloud.errors.push(`restore ${outlookEvent.subject}: ${msg}`);
+          console.error(`Outlook→iCloud: failed to restore "${outlookEvent.subject}" to ${syncSource}:`, err);
+        }
       }
     }
 
-    // Delete from iCloud when user deleted the event in Outlook (no Outlook event with this SyncSource+UID)
+    // Delete from iCloud only when we're sure the user removed the event from Outlook.
+    // Use both: (1) body SyncSource+UID, and (2) iCalUId match (in case body was missing/lost).
     const outlookKeys = new Set(
       existingEventsInWindow
         .map((e) => {
@@ -366,6 +390,9 @@ export default async function handler(
         })
         .filter((k): k is string => k !== null)
     );
+    const outlookUidsFromICal = new Set(
+      existingEventsInWindow.map((e) => e.iCalUId).filter((uid): uid is string => Boolean(uid))
+    );
     for (const ev of iCloudEvents) {
       if (ev.calendarName !== env.icloudCal1 && ev.calendarName !== env.icloudCal2) continue;
       if (!ev.eventUrl) continue;
@@ -373,20 +400,20 @@ export default async function handler(
       if (ev.uid.startsWith(ALTVINA_BLOCK_UID_PREFIX)) continue;
       const tag = ev.calendarName === env.icloudCal1 ? "CAL1" : "CAL2";
       const key = `${tag}\0${ev.uid}`;
-      if (!outlookKeys.has(key)) {
-        try {
-          await deleteIcloudEventByUrl(
-            env.icloudUsername,
-            env.icloudPassword,
-            ev.eventUrl
-          );
-          outlookToIcloud.deleted++;
-          console.log(`Outlook→iCloud: deleted "${ev.title}" (${ev.uid}) from ${tag}`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          outlookToIcloud.errors.push(`delete ${ev.title}: ${msg}`);
-          console.error(`Outlook→iCloud: failed to delete "${ev.title}":`, err);
-        }
+      // Do not delete if Outlook has this event (by body tag or by iCalUId)
+      if (outlookKeys.has(key) || outlookUidsFromICal.has(ev.uid)) continue;
+      try {
+        await deleteIcloudEventByUrl(
+          env.icloudUsername,
+          env.icloudPassword,
+          ev.eventUrl
+        );
+        outlookToIcloud.deleted++;
+        console.log(`Outlook→iCloud: deleted "${ev.title}" (${ev.uid}) from ${tag}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        outlookToIcloud.errors.push(`delete ${ev.title}: ${msg}`);
+        console.error(`Outlook→iCloud: failed to delete "${ev.title}":`, err);
       }
     }
 
@@ -493,8 +520,8 @@ export default async function handler(
       const m = parseSyncMeta(e.body?.content);
       if (!m.syncSource || !m.uid) return false;
       if (m.syncSource === "CAL1") {
-        if (cal1Uids.size === 0) return false; // No CAL1 data this run; don't delete
-        return !cal1Uids.has(m.uid);
+        if (cal1Uids.size === 0 && restoredCal1Uids.size === 0) return false; // No CAL1 data this run; don't delete
+        return !cal1Uids.has(m.uid) && !restoredCal1Uids.has(m.uid);
       }
       if (m.syncSource === "CAL2") {
         if (cal2UidsFromIcloud.size === 0) return false;
