@@ -245,13 +245,24 @@ export default async function handler(
       iCloudEvents.filter((e) => normalizeCalName(e.calendarName) === normalizeCalName(env.icloudCal2)).map((e) => e.uid)
     );
 
+    const outlookToIcloud = {
+      created: 0,
+      updated: 0,
+      deleted: 0,
+      skippedNoCal2Url: 0,
+      candidates: 0, // Outlook events with no SyncSource (would create on CAL2)
+      errors: [] as string[],
+    };
+
     for (const outlookEvent of existingEventsInWindow) {
       const meta = parseSyncMeta(outlookEvent.body?.content);
       const { uid: metaUid, syncSource } = meta;
 
       // No SyncSource = event was created manually in Outlook on Personal Busy; default to adding block on Jay's Calendar (CAL2)
       if (!syncSource) {
+        outlookToIcloud.candidates++;
         if (!cal2Url) {
+          outlookToIcloud.skippedNoCal2Url++;
           console.warn(`Skipping Outlook-created event "${outlookEvent.subject}" (no CAL2 URL)`);
           continue;
         }
@@ -282,8 +293,11 @@ export default async function handler(
             outlookEvent.showAs === "free" ? "free" : undefined,
             "CAL2"
           );
+          outlookToIcloud.created++;
           console.log(`Outlook→iCloud: created "${outlookEvent.subject}" on CAL2 and tagged Outlook (${newUid})`);
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          outlookToIcloud.errors.push(`${outlookEvent.subject}: ${msg}`);
           console.error(`Outlook→iCloud: failed to create "${outlookEvent.subject}" on CAL2:`, err);
         }
         continue;
@@ -310,8 +324,11 @@ export default async function handler(
               iCloudEv.eventUrl,
               { ...outlookNorm, uid: metaUid }
             );
+            outlookToIcloud.updated++;
             console.log(`Outlook→iCloud: updated "${outlookEvent.subject}" (${metaUid}) on ${syncSource}`);
           } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            outlookToIcloud.errors.push(`update ${outlookEvent.subject}: ${msg}`);
             console.error(`Outlook→iCloud: failed to update "${outlookEvent.subject}":`, err);
           }
         }
@@ -340,8 +357,11 @@ export default async function handler(
             env.icloudPassword,
             ev.eventUrl
           );
+          outlookToIcloud.deleted++;
           console.log(`Outlook→iCloud: deleted "${ev.title}" (${ev.uid}) from ${tag}`);
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          outlookToIcloud.errors.push(`delete ${ev.title}: ${msg}`);
           console.error(`Outlook→iCloud: failed to delete "${ev.title}":`, err);
         }
       }
@@ -435,6 +455,14 @@ export default async function handler(
         skipped: syncResult.skipped,
         deleted: deletedCount,
         durationMs: duration,
+      },
+      outlookToIcloud: {
+        created: outlookToIcloud.created,
+        updated: outlookToIcloud.updated,
+        deleted: outlookToIcloud.deleted,
+        skippedNoCal2Url: outlookToIcloud.skippedNoCal2Url,
+        candidates: outlookToIcloud.candidates,
+        errors: outlookToIcloud.errors.length > 0 ? outlookToIcloud.errors : undefined,
       },
       window: {
         start: window.start.toISOString(),
