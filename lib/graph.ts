@@ -615,10 +615,12 @@ export async function syncEvents(
   window: { start: Date; end: Date },
   syncOptions?: SyncEventsOptions
 ): Promise<{ created: number; updated: number; skipped: number; createdEventIds: Set<string> }> {
+  const normalizeCalName = (s: string) =>
+    s.trim().replace(/\u2019/g, "'").replace(/\u2018/g, "'");
   const getSyncSource = (calendarName: string): SyncSourceTag | undefined => {
     if (!syncOptions) return undefined;
-    if (calendarName === syncOptions.cal1Name) return "CAL1";
-    if (calendarName === syncOptions.cal2Name) return "CAL2";
+    if (normalizeCalName(calendarName) === normalizeCalName(syncOptions.cal1Name)) return "CAL1";
+    if (normalizeCalName(calendarName) === normalizeCalName(syncOptions.cal2Name)) return "CAL2";
     return "CAL3"; // public or other
   };
   let createdCount = 0;

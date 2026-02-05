@@ -218,18 +218,31 @@ export default async function handler(
       env.icloudPassword,
       [env.icloudCal1, env.icloudCal2]
     );
-    const cal1Url = caldavCalendars.find((c) => c.name === env.icloudCal1)?.url;
-    const cal2Url = caldavCalendars.find((c) => c.name === env.icloudCal2)?.url;
+    // Normalize names for matching (e.g. curly vs straight apostrophe: "Jay's" from iCloud vs env)
+    const normalizeCalName = (s: string) =>
+      s.trim().replace(/\u2019/g, "'").replace(/\u2018/g, "'");
+    const cal1Url = caldavCalendars.find(
+      (c) => normalizeCalName(c.name) === normalizeCalName(env.icloudCal1)
+    )?.url;
+    const cal2Url = caldavCalendars.find(
+      (c) => normalizeCalName(c.name) === normalizeCalName(env.icloudCal2)
+    )?.url;
+    if (!cal2Url) {
+      console.warn(
+        `CAL2 URL not found; discovered: ${caldavCalendars.map((c) => `"${c.name}"`).join(", ")}. ICLOUD_CAL2="${env.icloudCal2}". Outlook-created events will not write back to iCloud.`
+      );
+    }
 
     const iCloudByCalAndUid = new Map<string, (typeof iCloudEvents)[0]>();
     for (const ev of iCloudEvents) {
-      if (ev.calendarName === env.icloudCal1 || ev.calendarName === env.icloudCal2) {
-        iCloudByCalAndUid.set(`${ev.calendarName}\0${ev.uid}`, ev);
+      const n = normalizeCalName(ev.calendarName);
+      if (n === normalizeCalName(env.icloudCal1) || n === normalizeCalName(env.icloudCal2)) {
+        iCloudByCalAndUid.set(`${n}\0${ev.uid}`, ev);
       }
     }
 
     const cal2UidsFromIcloud = new Set(
-      iCloudEvents.filter((e) => e.calendarName === env.icloudCal2).map((e) => e.uid)
+      iCloudEvents.filter((e) => normalizeCalName(e.calendarName) === normalizeCalName(env.icloudCal2)).map((e) => e.uid)
     );
 
     for (const outlookEvent of existingEventsInWindow) {
@@ -238,7 +251,11 @@ export default async function handler(
 
       if (!syncSource || !metaUid) {
         // Created in Outlook → create on iCloud CAL2 (Jay's Calendar) and tag Outlook with SyncSource + UID
-        if (!cal2Url) continue;
+        if (!cal2Url) {
+          console.warn(`Skipping Outlook-created event "${outlookEvent.subject}" (no CAL2 URL)`);
+          continue;
+        }
+        console.log(`Outlook-created event "${outlookEvent.subject}"; creating on CAL2...`);
         try {
           const normalized = graphEventToNormalizedEvent(outlookEvent, {
             uid: "",
@@ -276,7 +293,7 @@ export default async function handler(
 
       const calName = syncSource === "CAL1" ? env.icloudCal1 : env.icloudCal2;
       const calUrl = syncSource === "CAL1" ? cal1Url : cal2Url;
-      const iCloudEv = iCloudByCalAndUid.get(`${calName}\0${metaUid}`);
+      const iCloudEv = iCloudByCalAndUid.get(`${normalizeCalName(calName)}\0${metaUid}`);
 
       if (iCloudEv?.eventUrl) {
         const outlookNorm = graphEventToNormalizedEvent(outlookEvent, { calendarName: calName });
@@ -349,9 +366,15 @@ export default async function handler(
     // Step 7: Orphan delete (Outlook events whose SyncSource+UID no longer exists on iCloud)
     // Only delete when we have a non-empty UID set for that source; otherwise we may have failed
     // to fetch that calendar (e.g. name mismatch) and would wrongly delete valid events.
-    const cal1Uids = new Set(iCloudEvents.filter((e) => e.calendarName === env.icloudCal1).map((e) => e.uid));
+    const cal1Uids = new Set(
+      iCloudEvents.filter((e) => normalizeCalName(e.calendarName) === normalizeCalName(env.icloudCal1)).map((e) => e.uid)
+    );
     const cal3Uids = new Set(
-      iCloudEvents.filter((e) => e.calendarName !== env.icloudCal1 && e.calendarName !== env.icloudCal2).map((e) => e.uid)
+      iCloudEvents.filter(
+        (e) =>
+          normalizeCalName(e.calendarName) !== normalizeCalName(env.icloudCal1) &&
+          normalizeCalName(e.calendarName) !== normalizeCalName(env.icloudCal2)
+      ).map((e) => e.uid)
     );
 
     const orphanedEvents = existingEventsInWindow.filter((e) => {
