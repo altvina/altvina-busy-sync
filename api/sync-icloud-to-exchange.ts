@@ -158,6 +158,10 @@ export default async function handler(
     console.log(`Fetched ${iCloudEvents.length} events from CalDAV calendars`);
     
     // Step 1b: Fetch events from public calendar URL if configured
+    // If the public URL is a published view of Jay's Calendar (CAL2), the same UIDs appear from both
+    // CalDAV and public. We only add public events whose UID is not already in iCloudEvents so we
+    // keep the CalDAV source (CAL2 with eventUrl for write-back) and avoid tagging as CAL3.
+    const caldavUids = new Set(iCloudEvents.map((e) => e.uid));
     if (env.icloudCal3) {
       console.log(`Fetching events from public calendar URL: ${env.icloudCal3}`);
       const { fetchPublicCalendarEvents } = await import("../lib/icloud.js");
@@ -167,10 +171,15 @@ export default async function handler(
         window.start,
         window.end
       );
-      console.log(`Fetched ${publicEvents.length} events from public calendar`);
-      iCloudEvents.push(...publicEvents);
+      const newFromPublic = publicEvents.filter((e) => !caldavUids.has(e.uid));
+      if (newFromPublic.length < publicEvents.length) {
+        console.log(
+          `Skipping ${publicEvents.length - newFromPublic.length} public event(s) already from CalDAV (prefer CAL1/CAL2 over CAL3)`
+        );
+      }
+      iCloudEvents.push(...newFromPublic);
     }
-    
+
     console.log(`Total events fetched from all sources: ${iCloudEvents.length}`);
 
     // Step 2: Get Microsoft Graph access token
