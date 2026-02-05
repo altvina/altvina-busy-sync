@@ -347,6 +347,8 @@ export default async function handler(
     console.log(`Sync complete: ${syncResult.created} created, ${syncResult.updated} updated, ${syncResult.skipped} skipped`);
 
     // Step 7: Orphan delete (Outlook events whose SyncSource+UID no longer exists on iCloud)
+    // Only delete when we have a non-empty UID set for that source; otherwise we may have failed
+    // to fetch that calendar (e.g. name mismatch) and would wrongly delete valid events.
     const cal1Uids = new Set(iCloudEvents.filter((e) => e.calendarName === env.icloudCal1).map((e) => e.uid));
     const cal3Uids = new Set(
       iCloudEvents.filter((e) => e.calendarName !== env.icloudCal1 && e.calendarName !== env.icloudCal2).map((e) => e.uid)
@@ -356,9 +358,18 @@ export default async function handler(
       if (syncResult.createdEventIds.has(e.id)) return false;
       const m = parseSyncMeta(e.body?.content);
       if (!m.syncSource || !m.uid) return false;
-      if (m.syncSource === "CAL1" && !cal1Uids.has(m.uid)) return true;
-      if (m.syncSource === "CAL2" && !cal2UidsFromIcloud.has(m.uid)) return true;
-      if (m.syncSource === "CAL3" && !cal3Uids.has(m.uid)) return true;
+      if (m.syncSource === "CAL1") {
+        if (cal1Uids.size === 0) return false; // No CAL1 data this run; don't delete
+        return !cal1Uids.has(m.uid);
+      }
+      if (m.syncSource === "CAL2") {
+        if (cal2UidsFromIcloud.size === 0) return false;
+        return !cal2UidsFromIcloud.has(m.uid);
+      }
+      if (m.syncSource === "CAL3") {
+        if (cal3Uids.size === 0) return false;
+        return !cal3Uids.has(m.uid);
+      }
       return false;
     });
 
