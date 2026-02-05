@@ -276,10 +276,17 @@ export default async function handler(
     }
 
     // Exchange → iCloud: sync Altvina busy events to Jay's calendar as "Altvina Engagement" blocks
-    let exchangeToIcloud: { skipped: true } | { skipped?: false; createdOrUpdated: number; deleted: number };
+    let exchangeToIcloud:
+      | { skipped: true; reason: string }
+      | { skipped?: false; createdOrUpdated: number; deleted: number; totalInWindow: number; busyCount: number; freeExcluded: number };
     if (!env.msSourceCalendarName || !env.icloudJayCalendarName) {
-      console.log("Exchange → iCloud sync skipped (missing MS_SOURCE_CALENDAR_NAME or ICLOUD_JAY_CALENDAR_NAME)");
-      exchangeToIcloud = { skipped: true };
+      const reason = !env.msSourceCalendarName && !env.icloudJayCalendarName
+        ? "MS_SOURCE_CALENDAR_NAME and ICLOUD_JAY_CALENDAR_NAME not set"
+        : !env.msSourceCalendarName
+          ? "MS_SOURCE_CALENDAR_NAME not set"
+          : "ICLOUD_JAY_CALENDAR_NAME not set";
+      console.log("Exchange → iCloud sync skipped:", reason);
+      exchangeToIcloud = { skipped: true, reason };
     } else {
       const sourceCalendar = await findTargetCalendar(
         accessToken,
@@ -294,7 +301,8 @@ export default async function handler(
         window.end
       );
       const busyEvents = exchangeEventsRaw.filter(e => e.showAs !== "free");
-      console.log(`Exchange → iCloud: ${busyEvents.length} busy event(s) from "${env.msSourceCalendarName}" (${exchangeEventsRaw.length - busyEvents.length} free excluded)`);
+      const freeExcluded = exchangeEventsRaw.length - busyEvents.length;
+      console.log(`Exchange → iCloud: ${busyEvents.length} busy event(s) from "${env.msSourceCalendarName}" (${freeExcluded} free excluded). Sample showAs: ${exchangeEventsRaw.slice(0, 5).map(e => `${e.subject}=${e.showAs ?? "undefined"}`).join(", ")}`);
 
       const jayCalendars = await discoverCalendars(
         env.icloudUsername,
@@ -302,8 +310,9 @@ export default async function handler(
         [env.icloudJayCalendarName]
       );
       if (jayCalendars.length === 0) {
-        console.warn(`Exchange → iCloud: calendar "${env.icloudJayCalendarName}" not found, skipping`);
-        exchangeToIcloud = { skipped: true };
+        const reason = `iCloud calendar "${env.icloudJayCalendarName}" not found (check exact name)`;
+        console.warn("Exchange → iCloud:", reason);
+        exchangeToIcloud = { skipped: true, reason };
       } else {
         const jayCalendarUrl = jayCalendars[0].url;
         const baseUrl = jayCalendarUrl.replace(/\/$/, "");
@@ -350,7 +359,13 @@ export default async function handler(
           }
         }
         console.log(`Exchange → iCloud: ${createdOrUpdated} created/updated, ${deleted} deleted`);
-        exchangeToIcloud = { createdOrUpdated, deleted };
+        exchangeToIcloud = {
+          createdOrUpdated,
+          deleted,
+          totalInWindow: exchangeEventsRaw.length,
+          busyCount: busyEvents.length,
+          freeExcluded,
+        };
       }
     }
 

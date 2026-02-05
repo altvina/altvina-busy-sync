@@ -299,6 +299,16 @@ https://your-project.vercel.app/api/sync-icloud-to-exchange
 - Ensure events exist in the sync window (1 day back to 90 days forward)
 - Check that the target calendar is not read-only
 
+### Exchange → iCloud: Altvina Engagement blocks not appearing
+
+1. **Trigger the sync manually** and inspect the JSON response. Call `GET https://your-project.vercel.app/api/sync-icloud-to-exchange` and look at `exchangeToIcloud`:
+   - If `exchangeToIcloud.skipped === true`, check `exchangeToIcloud.reason`: missing env vars or "iCloud calendar … not found".
+   - If it ran: `totalInWindow` = events in Exchange in the window, `busyCount` = events synced (non-Free), `freeExcluded` = events skipped because Show As is Free, `createdOrUpdated` = blocks written to iCloud.
+2. **Env vars**: In Vercel, set both `MS_SOURCE_CALENDAR_NAME` (e.g. `Calendar`) and `ICLOUD_JAY_CALENDAR_NAME` (e.g. `Jay - Personal`). Redeploy after changing env vars.
+3. **Show As**: In Outlook, open the appointment and set **Show As** to **Busy**, **Tentative**, or **Out of Office**. Events set to **Free** are never synced.
+4. **Calendar names**: Names are case-sensitive and must match exactly (e.g. `Jay - Personal` with the space and hyphen).
+5. **Vercel logs**: In the deployment’s function logs, look for "Exchange → iCloud:" to see busy count, free excluded, and any "failed to sync event" or "Failed to create/update iCloud event" errors (e.g. iCloud 403/400).
+
 ### Timezone Issues
 
 - Verify `TIMEZONE` is set to a valid IANA timezone (e.g., `America/Los_Angeles`)
