@@ -122,15 +122,9 @@ function validateEnvVars(): {
 }
 
 /**
- * Kill switch: when set (e.g. SYNC_PAUSED=true), the sync does nothing and returns immediately.
- * No reads or writes to any calendar. Set in Vercel env vars to stop all changes until you're ready.
+ * HARD STOP: When true, the sync does nothing — no reads, no writes. Change to false to resume.
  */
-function isSyncPaused(): boolean {
-  const v = process.env.SYNC_PAUSED;
-  if (!v) return false;
-  const s = v.trim().toLowerCase();
-  return s === "true" || s === "1" || s === "yes" || s === "on";
-}
+const SYNC_DISABLED = true;
 
 /**
  * Main sync handler
@@ -142,13 +136,13 @@ export default async function handler(
   const startTime = Date.now();
 
   try {
-    if (isSyncPaused()) {
+    if (SYNC_DISABLED) {
       const duration = Date.now() - startTime;
-      console.warn("SYNC_PAUSED is set — skipping all calendar operations. No changes made.");
+      console.warn("SYNC_DISABLED is true — no calendar operations. No changes made.");
       res.status(200).json({
         success: true,
         paused: true,
-        message: "Calendar sync is paused. No reads or writes were performed. Set SYNC_PAUSED to false (or remove it) to resume.",
+        message: "Calendar sync is disabled in code (SYNC_DISABLED=true). No changes to any calendar.",
         durationMs: duration,
       });
       return;
